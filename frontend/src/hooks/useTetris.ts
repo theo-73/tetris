@@ -1,368 +1,628 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Piece, PieceType, Point, SHAPES, COLS, ROWS, 
-  isValidMove, rotate, getWallKicks, 
-  INITIAL_DROP_INTERVAL, MIN_DROP_INTERVAL, SPEED_INCREMENT 
+  isValidMove, rotate, getWallKicks, SevenBag,
+  INITIAL_DROP_INTERVAL, MIN_DROP_INTERVAL, SPEED_INCREMENT,
+  LOCK_DELAY_MS, MAX_LOCK_RESETS
 } from '../lib/tetris';
 
-const INITIAL_GRID = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+const INITIAL_GRID: (PieceType | number)[][] = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
 
-export const useTetris = () => {
+const fallbackBag = new SevenBag();
+
+export type AudioEventType = 'move' | 'rotate' | 'softdrop' | 'harddrop' | 'lock' | 'clear' | 'tetris' | 'purge' | 'gameover';
+
+export interface UseTetrisOptions {
+  onAudioEvent?: (type: AudioEventType) => void;
+}
+
+export const useTetris = (options?: UseTetrisOptions) => {
   const [grid, setGrid] = useState<(PieceType | number)[][]>(INITIAL_GRID);
   const [activePiece, setActivePiece] = useState<Piece | null>(null);
-  const [nextPieceType, setNextPieceType] = useState<PieceType>('I'); // Fixed initial for SSR
+  const [nextPieceType, setNextPieceType] = useState<PieceType>(() => fallbackBag.next());
   const [holdPiece, setHoldPiece] = useState<PieceType | null>(null);
   const [canHold, setCanHold] = useState(true);
   const [score, setScore] = useState(0);
+  const [lines, setLines] = useState(0);
   const [gameOver, setGameOver] = useState(false);
   const [isPaused, setIsPaused] = useState(true);
   const [chaos, setChaos] = useState(0);
-  const [thoughts, setThoughts] = useState<{text: string, time: string}[]>([
-    { text: "SYSTEM_READY", time: "00:00:00" } // Fixed initial for SSR
+  const [thoughts, setThoughts] = useState<{ text: string; time: string }[]>(() => [
+    { text: "SYSTEM_READY // ENTROPIC_ONLINE", time: "--:--:--" }
   ]);
   const [lockedCell, setLockedCell] = useState<Point | null>(null);
-  const [ws, setWs] = useState<WebSocket | null>(null);
-  const [comboMessage, setComboMessage] = useState<{ text: string, type: 'tetris' | 'purge' } | null>(null);
+  const [comboMessage, setComboMessage] = useState<{ text: string; type: 'tetris' | 'purge' } | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
 
+  // Audio callback ref
+  const onAudioRef = useRef(options?.onAudioEvent);
+  useEffect(() => {
+    onAudioRef.current = options?.onAudioEvent;
+  }, [options?.onAudioEvent]);
+
+  // References for game loop and piece management
   const requestRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const dropCounterRef = useRef<number>(0);
   const [dropInterval, setDropInterval] = useState(INITIAL_DROP_INTERVAL);
+  
+  // Lock delay management
+  const lockTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lockResetsRef = useRef<number>(0);
 
-  // Initialize client-side state
+  // Refs for current mutable state
+  const activePieceRef = useRef<Piece | null>(null);
+  const gridRef = useRef<(PieceType | number)[][]>(grid);
+  const lockedCellRef = useRef<Point | null>(null);
+  const isPausedRef = useRef(isPaused);
+  const gameOverRef = useRef(gameOver);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Synchronize refs after render in compliance with React 19 rules
   useEffect(() => {
-    setNextPieceType(getRandomPieceType());
-    setThoughts([{ text: "SYSTEM_READY", time: new Date().toLocaleTimeString() }]);
-  }, []);
+    activePieceRef.current = activePiece;
+    gridRef.current = grid;
+    lockedCellRef.current = lockedCell;
+    isPausedRef.current = isPaused;
+    gameOverRef.current = gameOver;
+  });
 
-  // WebSocket Setup with Reconnection
-  useEffect(() => {
-    let socket: WebSocket;
-    let reconnectTimeout: NodeJS.Timeout;
-    let isComponentMounted = true;
+  // Helper to trigger audio safely
+  const triggerAudio = (event: AudioEventType) => {
+    if (onAudioRef.current) {
+      onAudioRef.current(event);
+    }
+  };
 
-    const connect = () => {
-      if (!isComponentMounted) return;
-      
-      socket = new WebSocket('ws://localhost:8000/ws');
-      socket.onopen = () => {
-        if (isComponentMounted) {
-          console.log('WebSocket Connected');
-          setThoughts(prev => [{ text: "WEBSOCKET_ESTABLISHED", time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
-        }
-      };
-      socket.onmessage = (event) => {
-        if (!isComponentMounted) return;
-        const data = JSON.parse(event.data);
-        if (data.type === 'ADVERSARIAL_UPDATE') {
-          const { piece, chaos: newChaos, thought } = data.payload;
-          setNextPieceType(piece as PieceType);
-          setChaos(newChaos);
-          setThoughts(prev => [{ text: thought, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
-        } else if (data.type === 'CELL_LOCK') {
-          setLockedCell(data.payload);
-        } else if (data.type === 'CLEAR_LOCK') {
-          setLockedCell(null);
-        }
-      };
-      socket.onclose = () => {
-        if (isComponentMounted) {
-          console.log('WebSocket Disconnected. Reconnecting...');
-          reconnectTimeout = setTimeout(connect, 3000);
-        }
-      };
-      setWs(socket);
-    };
-
-    connect();
-    return () => {
-      isComponentMounted = false;
-      socket?.close();
-      clearTimeout(reconnectTimeout);
-    };
-  }, []);
-
-  function getRandomPieceType(): PieceType {
-    const pieces: PieceType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
-    return pieces[Math.floor(Math.random() * pieces.length)];
-  }
-
-  const spawnPiece = useCallback((type: PieceType) => {
+  // Helper to create a piece
+  const createPiece = (type: PieceType): Piece => {
     const shape = SHAPES[type];
-    const piece: Piece = {
+    return {
       type,
-      position: { x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), y: -1 },
+      position: { 
+        x: Math.floor(COLS / 2) - Math.floor(shape[0].length / 2), 
+        y: -1 
+      },
       rotation: 0,
       shape: shape.map(row => [...row]),
     };
+  };
 
-    if (!isValidMove(grid, piece, { x: 0, y: 0 }, lockedCell)) {
-      setGameOver(true);
-      setIsPaused(true);
-      return;
-    }
-    setActivePiece(piece);
-    setCanHold(true);
-  }, [grid, lockedCell]);
-
-  const togglePause = useCallback(() => {
-    if (gameOver) {
-      setGrid(INITIAL_GRID);
-      setScore(0);
-      setGameOver(false);
-      setChaos(0);
-      setDropInterval(INITIAL_DROP_INTERVAL);
-      setActivePiece(null);
-      setHoldPiece(null);
-      setCanHold(true);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'RESET_GAME' }));
-      }
-    }
-    
-    setIsPaused(prev => {
-      if (prev === true) {
-        lastTimeRef.current = performance.now();
-      }
-      return !prev;
-    });
-  }, [gameOver, ws]);
-
+  // WebSocket Connection
   useEffect(() => {
-    if (!activePiece && !gameOver && !isPaused) {
-      spawnPiece(nextPieceType);
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let isMounted = true;
+
+    const connect = () => {
+      if (!isMounted) return;
+
+      try {
+        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || (
+          typeof window !== 'undefined'
+            ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8000/ws`
+            : 'ws://localhost:8000/ws'
+        );
+
+        socket = new WebSocket(wsUrl);
+
+        socket.onopen = () => {
+          if (!isMounted) return;
+          setWsConnected(true);
+          setThoughts(prev => [
+            { text: "NEURAL_LINK_ESTABLISHED // ADVERSARY_CONNECTED", time: new Date().toLocaleTimeString() },
+            ...prev
+          ].slice(0, 15));
+        };
+
+        socket.onmessage = (event) => {
+          if (!isMounted) return;
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'ADVERSARIAL_UPDATE') {
+              const { piece, chaos: newChaos, thought } = data.payload;
+              if (piece) {
+                setNextPieceType(piece as PieceType);
+              }
+              if (typeof newChaos === 'number') {
+                setChaos(newChaos);
+              }
+              if (thought) {
+                setThoughts(prev => [
+                  { text: thought, time: new Date().toLocaleTimeString() },
+                  ...prev
+                ].slice(0, 15));
+              }
+            } else if (data.type === 'CELL_LOCK') {
+              setLockedCell(data.payload);
+            } else if (data.type === 'CLEAR_LOCK') {
+              setLockedCell(null);
+            }
+          } catch (err) {
+            console.error("Failed to parse websocket message", err);
+          }
+        };
+
+        socket.onclose = () => {
+          if (!isMounted) return;
+          setWsConnected(false);
+          reconnectTimeout = setTimeout(connect, 3000);
+        };
+
+        socket.onerror = () => {
+          socket?.close();
+        };
+
+        wsRef.current = socket;
+      } catch (err) {
+        console.error("WebSocket connection error:", err);
+        reconnectTimeout = setTimeout(connect, 3000);
+      }
+    };
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      if (socket) socket.close();
+    };
+  }, []);
+
+  // Clear lock delay timer
+  const clearLockTimer = useCallback(() => {
+    if (lockTimerRef.current) {
+      clearTimeout(lockTimerRef.current);
+      lockTimerRef.current = null;
     }
-  }, [activePiece, gameOver, isPaused, nextPieceType, spawnPiece]);
+  }, []);
 
-  const holdPieceAction = useCallback(() => {
-    if (!activePiece || !canHold || isPaused) return;
+  // Lock Piece Definition
+  const lockPiece = useCallback((pieceToLock: Piece) => {
+    clearLockTimer();
+    lockResetsRef.current = 0;
 
-    const currentType = activePiece.type;
-    if (holdPiece) {
-      spawnPiece(holdPiece);
-    } else {
-      setActivePiece(null);
-    }
-    setHoldPiece(currentType);
-    setCanHold(false);
-  }, [activePiece, canHold, holdPiece, isPaused, spawnPiece]);
+    const currentGrid = gridRef.current;
+    const currentLocked = lockedCellRef.current;
+    const newGrid = currentGrid.map(row => [...row]);
 
-  const lockPiece = useCallback((piece: Piece) => {
-    const newGrid = grid.map(row => [...row]);
-    piece.shape.forEach((row, y) => {
+    // Place piece blocks on board
+    pieceToLock.shape.forEach((row, y) => {
       row.forEach((value, x) => {
         if (value) {
-          const gridY = piece.position.y + y;
-          const gridX = piece.position.x + x;
-          if (gridY >= 0) newGrid[gridY][gridX] = piece.type; // Store the actual type
+          const gridY = pieceToLock.position.y + y;
+          const gridX = pieceToLock.position.x + x;
+          if (gridY >= 0 && gridY < ROWS && gridX >= 0 && gridX < COLS) {
+            newGrid[gridY][gridX] = pieceToLock.type;
+          }
         }
       });
     });
 
-    const rowsToClear = newGrid
-      .map((row, i) => (row.every(cell => cell !== 0) ? i : -1))
-      .filter(i => i !== -1);
-
-    let cleared = rowsToClear.length;
-    let finalGrid = [...newGrid];
-
-    let purgeTriggered = false;
-    let newLockedCell = lockedCell;
-
-    if (lockedCell && rowsToClear.includes(lockedCell.y)) {
-      purgeTriggered = true;
-      newLockedCell = null;
-      setChaos(0);
-      setThoughts(prev => [{ text: "PURGE_PROTOCOL_SUCCESS: Malice neutralized.", time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
-      
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'PURGE_EVENT' }));
+    // Check completed rows
+    const rowsToClear: number[] = [];
+    for (let r = 0; r < ROWS; r++) {
+      if (newGrid[r].every(cell => cell !== 0)) {
+        rowsToClear.push(r);
       }
-    } else if (lockedCell && cleared > 0) {
-      // Translate lock: Shift down if lines above were cleared
-      const rowsBelow = rowsToClear.filter(y => y > lockedCell.y).length;
-      const rowsAbove = rowsToClear.filter(y => y < lockedCell.y).length;
-      // Note: Since we shift top-down by unshifting zeros, 
-      // the lock effectively moves DOWN by the number of rows cleared ABOVE it.
-      newLockedCell = { ...lockedCell, y: lockedCell.y + rowsAbove };
     }
 
+    const cleared = rowsToClear.length;
+    let finalGrid = [...newGrid];
+    let purgeTriggered = false;
+    let updatedLockedCell = currentLocked;
+
+    // Purge detection: Player cleared the row containing the adversary lock
+    if (currentLocked && rowsToClear.includes(currentLocked.y)) {
+      purgeTriggered = true;
+      updatedLockedCell = null;
+      setChaos(0);
+      triggerAudio('purge');
+      setComboMessage({ text: 'SYSTEM_PURGE', type: 'purge' });
+      setTimeout(() => setComboMessage(null), 1200);
+
+      setThoughts(prev => [
+        { text: "PURGE_PROTOCOL_SUCCESS // Malice neutralized", time: new Date().toLocaleTimeString() },
+        ...prev
+      ].slice(0, 15));
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'PURGE_EVENT' }));
+      }
+    } else if (currentLocked && cleared > 0) {
+      // Shift locked cell down for rows cleared above it
+      const rowsAbove = rowsToClear.filter(y => y < currentLocked.y).length;
+      updatedLockedCell = { ...currentLocked, y: currentLocked.y + rowsAbove };
+    }
+
+    // Process cleared rows
     if (cleared > 0) {
       finalGrid = newGrid.filter(row => !row.every(cell => cell !== 0));
       while (finalGrid.length < ROWS) {
         finalGrid.unshift(Array(COLS).fill(0));
       }
 
+      // 15% entropy hazard injection on non-purge clears
       if (!purgeTriggered && Math.random() < 0.15) {
-         const randomRow = Math.floor(Math.random() * (ROWS - 5)) + 5;
-         const randomCol = Math.floor(Math.random() * COLS);
-         finalGrid[randomRow][randomCol] = 'entropy';
+        const randomRow = Math.floor(Math.random() * (ROWS - 6)) + 6;
+        const randomCol = Math.floor(Math.random() * COLS);
+        if (finalGrid[randomRow][randomCol] === 0) {
+          finalGrid[randomRow][randomCol] = 'entropy';
+        }
       }
-      
-      // Speed increase
-      setDropInterval((prev: number) => Math.max(MIN_DROP_INTERVAL, prev * SPEED_INCREMENT));
+
+      // Audio & Combo Banner
+      if (cleared === 4) {
+        triggerAudio('tetris');
+        setComboMessage({ text: 'TETRIS', type: 'tetris' });
+        setTimeout(() => setComboMessage(null), 1200);
+      } else if (!purgeTriggered) {
+        triggerAudio('clear');
+      }
+
+      // Score calculation (Standard guideline scaling)
+      const pointsTable = [0, 100, 300, 500, 800];
+      const basePoints = pointsTable[Math.min(cleared, 4)] || cleared * 200;
+      const purgeBonus = purgeTriggered ? 1000 : 0;
+      setScore(prev => prev + basePoints + purgeBonus);
+      setLines(prev => prev + cleared);
+
+      // Accelerate drop speed
+      setDropInterval(prev => Math.max(MIN_DROP_INTERVAL, prev * SPEED_INCREMENT));
+    } else {
+      triggerAudio('lock');
     }
 
     setGrid(finalGrid);
-    setLockedCell(newLockedCell);
-    setScore(prev => prev + cleared * 100);
-    setActivePiece(null);
+    setLockedCell(updatedLockedCell);
+    setCanHold(true);
 
-    if (cleared > 0) {
-      if (cleared === 4) {
-        setComboMessage({ text: 'TETRIS', type: 'tetris' });
-      } else if (purgeTriggered) {
-        setComboMessage({ text: 'SYSTEM_PURGE', type: 'purge' });
+    // Send updated board state to backend
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
+    }
+
+    // Spawn next piece immediately
+    setNextPieceType(currentNext => {
+      const pieceToSpawn = createPiece(currentNext);
+      
+      // Check top-out / game-over
+      if (!isValidMove(finalGrid, pieceToSpawn, { x: 0, y: 0 }, updatedLockedCell)) {
+        setGameOver(true);
+        setIsPaused(true);
+        setActivePiece(null);
+        triggerAudio('gameover');
+        return currentNext;
       }
-      setTimeout(() => setComboMessage(null), 1000);
-    }
 
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
-    }
-  }, [grid, ws, lockedCell]);
+      setActivePiece(pieceToSpawn);
+      // Fallback: advance next piece type if offline
+      return fallbackBag.next();
+    });
+  }, [clearLockTimer]);
 
-  const movePiece = useCallback((dx: number, dy: number) => {
-    if (!activePiece || gameOver || isPaused) return false;
-    if (isValidMove(grid, activePiece, { x: dx, y: dy }, lockedCell)) {
-      setActivePiece(prev => prev ? { ...prev, position: { x: prev.position.x + dx, y: prev.position.y + dy } } : null);
+  // Move Piece
+  const movePiece = useCallback((dx: number, dy: number): boolean => {
+    const piece = activePieceRef.current;
+    if (!piece || gameOverRef.current || isPausedRef.current) return false;
+
+    const currentGrid = gridRef.current;
+    const currentLocked = lockedCellRef.current;
+
+    if (isValidMove(currentGrid, piece, { x: dx, y: dy }, currentLocked)) {
+      setActivePiece(prev => prev ? {
+        ...prev,
+        position: { x: prev.position.x + dx, y: prev.position.y + dy }
+      } : null);
+
+      if (dx !== 0) triggerAudio('move');
+      if (dy > 0) triggerAudio('softdrop');
+
+      // If moving while grounded, reset lock delay (up to MAX_LOCK_RESETS)
+      const isNowGrounded = !isValidMove(currentGrid, piece, { x: dx, y: dy + 1 }, currentLocked);
+      if (isNowGrounded && lockResetsRef.current < MAX_LOCK_RESETS) {
+        lockResetsRef.current += 1;
+        clearLockTimer();
+        lockTimerRef.current = setTimeout(() => {
+          if (activePieceRef.current) {
+            lockPiece(activePieceRef.current);
+          }
+        }, LOCK_DELAY_MS);
+      } else if (!isNowGrounded) {
+        clearLockTimer();
+      }
+
       return true;
     }
-    if (dy > 0) {
-      lockPiece(activePiece);
-    }
-    return false;
-  }, [activePiece, grid, gameOver, isPaused, lockPiece, lockedCell]);
 
-  const rotatePiece = useCallback(() => {
-    if (!activePiece || gameOver || isPaused) return;
-    const nextRotation = (activePiece.rotation + 1) % 4;
-    const nextShape = rotate(activePiece.shape);
-    const kicks = getWallKicks(activePiece.type, activePiece.rotation, nextRotation);
+    // Downward collision triggers lock delay
+    if (dy > 0) {
+      if (!lockTimerRef.current) {
+        lockTimerRef.current = setTimeout(() => {
+          if (activePieceRef.current) {
+            lockPiece(activePieceRef.current);
+          }
+        }, LOCK_DELAY_MS);
+      }
+    }
+
+    return false;
+  }, [clearLockTimer, lockPiece]);
+
+  // Rotate Piece
+  const rotatePiece = useCallback((dir: 'cw' | 'ccw' = 'cw') => {
+    const piece = activePieceRef.current;
+    if (!piece || gameOverRef.current || isPausedRef.current) return;
+
+    const currentGrid = gridRef.current;
+    const currentLocked = lockedCellRef.current;
+
+    const nextRotation = dir === 'cw' 
+      ? (piece.rotation + 1) % 4 
+      : (piece.rotation + 3) % 4;
+    
+    const nextShape = rotate(piece.shape, dir);
+    const kicks = getWallKicks(piece.type, piece.rotation, nextRotation);
 
     for (const [kx, ky] of kicks) {
       const rotatedPiece: Piece = {
-        ...activePiece,
+        ...piece,
         rotation: nextRotation,
         shape: nextShape,
-        position: { x: activePiece.position.x + kx, y: activePiece.position.y - ky }
+        position: { x: piece.position.x + kx, y: piece.position.y - ky }
       };
-      if (isValidMove(grid, rotatedPiece, { x: 0, y: 0 }, lockedCell)) {
+
+      if (isValidMove(currentGrid, rotatedPiece, { x: 0, y: 0 }, currentLocked)) {
         setActivePiece(rotatedPiece);
+        triggerAudio('rotate');
+
+        // Reset lock delay on successful rotation
+        if (lockResetsRef.current < MAX_LOCK_RESETS) {
+          lockResetsRef.current += 1;
+          clearLockTimer();
+          const isGrounded = !isValidMove(currentGrid, rotatedPiece, { x: 0, y: 1 }, currentLocked);
+          if (isGrounded) {
+            lockTimerRef.current = setTimeout(() => {
+              if (activePieceRef.current) {
+                lockPiece(activePieceRef.current);
+              }
+            }, LOCK_DELAY_MS);
+          }
+        }
         return;
       }
     }
-  }, [activePiece, grid, gameOver, isPaused, lockedCell]);
+  }, [clearLockTimer, lockPiece]);
 
+  // Hard Drop
   const hardDrop = useCallback(() => {
-    if (!activePiece || gameOver || isPaused) return;
-    let dropY = 0;
-    while (isValidMove(grid, activePiece, { x: 0, y: dropY + 1 }, lockedCell)) {
-      dropY++;
-    }
-    const finalPiece = { ...activePiece, position: { ...activePiece.position, y: activePiece.position.y + dropY } };
-    lockPiece(finalPiece);
-  }, [activePiece, grid, gameOver, isPaused, lockPiece, lockedCell]);
+    const piece = activePieceRef.current;
+    if (!piece || gameOverRef.current || isPausedRef.current) return;
 
-  const getGhostPosition = useCallback((): Point | null => {
-    if (!activePiece) return null;
+    const currentGrid = gridRef.current;
+    const currentLocked = lockedCellRef.current;
+
     let dropY = 0;
-    while (isValidMove(grid, activePiece, { x: 0, y: dropY + 1 }, lockedCell)) {
+    while (isValidMove(currentGrid, piece, { x: 0, y: dropY + 1 }, currentLocked)) {
       dropY++;
     }
-    return { x: activePiece.position.x, y: activePiece.position.y + dropY };
+
+    const droppedPiece: Piece = {
+      ...piece,
+      position: { ...piece.position, y: piece.position.y + dropY }
+    };
+
+    triggerAudio('harddrop');
+    setScore(prev => prev + dropY * 2);
+    lockPiece(droppedPiece);
+  }, [lockPiece]);
+
+  // Hold Action
+  const holdPieceAction = useCallback(() => {
+    const piece = activePieceRef.current;
+    if (!piece || !canHold || isPausedRef.current || gameOverRef.current) return;
+
+    clearLockTimer();
+    const currentType = piece.type;
+    const currentGrid = gridRef.current;
+    const currentLocked = lockedCellRef.current;
+
+    if (holdPiece) {
+      const pieceToSwap = createPiece(holdPiece);
+      if (isValidMove(currentGrid, pieceToSwap, { x: 0, y: 0 }, currentLocked)) {
+        setActivePiece(pieceToSwap);
+        setHoldPiece(currentType);
+        setCanHold(false);
+      }
+    } else {
+      setHoldPiece(currentType);
+      setCanHold(false);
+
+      // Advance piece from next queue
+      setNextPieceType(currentNext => {
+        const pieceToSpawn = createPiece(currentNext);
+        if (isValidMove(currentGrid, pieceToSpawn, { x: 0, y: 0 }, currentLocked)) {
+          setActivePiece(pieceToSpawn);
+        } else {
+          setGameOver(true);
+          setIsPaused(true);
+          setActivePiece(null);
+        }
+        return fallbackBag.next();
+      });
+    }
+  }, [canHold, holdPiece, clearLockTimer]);
+
+  // Ghost Position
+  const getGhostPosition = useCallback((): Point | null => {
+    const piece = activePiece;
+    if (!piece) return null;
+
+    let dropY = 0;
+    while (isValidMove(grid, piece, { x: 0, y: dropY + 1 }, lockedCell)) {
+      dropY++;
+    }
+    return { x: piece.position.x, y: piece.position.y + dropY };
   }, [activePiece, grid, lockedCell]);
 
-  // Real-time position pulse to backend
+  // Toggle Pause / Reboot
+  const togglePause = useCallback(() => {
+    if (gameOverRef.current) {
+      clearLockTimer();
+      setGrid(INITIAL_GRID);
+      setScore(0);
+      setLines(0);
+      setGameOver(false);
+      setChaos(0);
+      setDropInterval(INITIAL_DROP_INTERVAL);
+      setHoldPiece(null);
+      setCanHold(true);
+
+      const firstPiece = createPiece(fallbackBag.next());
+      setActivePiece(firstPiece);
+      setNextPieceType(fallbackBag.next());
+      setIsPaused(false);
+      lastTimeRef.current = performance.now();
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'RESET_GAME' }));
+      }
+      return;
+    }
+
+    setIsPaused(prev => {
+      const nextState = !prev;
+      if (!nextState) {
+        lastTimeRef.current = performance.now();
+        // If unpausing without active piece, spawn initial
+        if (!activePieceRef.current) {
+          const piece = createPiece(nextPieceType);
+          setActivePiece(piece);
+          setNextPieceType(fallbackBag.next());
+        }
+      } else {
+        clearLockTimer();
+      }
+      return nextState;
+    });
+  }, [clearLockTimer, nextPieceType]);
+
+  // Continuous rAF Game Tick Loop
+  const loopRef = useRef<(time: number) => void>(() => {});
+
   useEffect(() => {
-    if (!activePiece || isPaused || !ws || ws.readyState !== WebSocket.OPEN) return;
-    
-    const interval = setInterval(() => {
-      ws.send(JSON.stringify({
-        type: 'LIVE_UPDATE',
-        payload: { x: activePiece.position.x, y: activePiece.position.y }
-      }));
+    loopRef.current = (time: number) => {
+      if (!isPausedRef.current && !gameOverRef.current) {
+        const deltaTime = time - lastTimeRef.current;
+        lastTimeRef.current = time;
+
+        dropCounterRef.current += deltaTime;
+        if (dropCounterRef.current > dropInterval) {
+          movePiece(0, 1);
+          dropCounterRef.current = 0;
+        }
+      }
+      requestRef.current = requestAnimationFrame((t) => loopRef.current(t));
+    };
+  }, [dropInterval, movePiece]);
+
+  useEffect(() => {
+    lastTimeRef.current = performance.now();
+    requestRef.current = requestAnimationFrame((t) => loopRef.current(t));
+    return () => cancelAnimationFrame(requestRef.current);
+  }, []);
+
+  // Live Position Pulse to Backend (Stable timer decoupled from keypresses)
+  useEffect(() => {
+    const pulseInterval = setInterval(() => {
+      const piece = activePieceRef.current;
+      const ws = wsRef.current;
+      if (piece && !isPausedRef.current && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'LIVE_UPDATE',
+          payload: { x: piece.position.x, y: piece.position.y }
+        }));
+      }
     }, 500);
 
-    return () => clearInterval(interval);
-  }, [activePiece, isPaused, ws]);
+    return () => clearInterval(pulseInterval);
+  }, []);
 
-  const update = useCallback((time: number) => {
-    if (isPaused) return;
-    const deltaTime = time - lastTimeRef.current;
-    lastTimeRef.current = time;
-
-    dropCounterRef.current += deltaTime;
-    if (dropCounterRef.current > dropInterval) {
-      movePiece(0, 1);
-      dropCounterRef.current = 0;
-    }
-
-    requestRef.current = requestAnimationFrame(update);
-  }, [movePiece, isPaused, dropInterval]);
-
+  // Keyboard controls with DAS/ARR and preventDefault
   useEffect(() => {
-    if (!isPaused) {
-      requestRef.current = requestAnimationFrame(update);
-    }
-    return () => cancelAnimationFrame(requestRef.current!);
-  }, [update, isPaused]);
-
-  // Professional DAS/ARR Key Handling
-  useEffect(() => {
-    if (gameOver || isPaused) {
-      const handleGlobalDown = (e: KeyboardEvent) => {
-        if (e.key === 'Enter') togglePause();
-      };
-      window.addEventListener('keydown', handleGlobalDown);
-      return () => window.removeEventListener('keydown', handleGlobalDown);
-    }
-
-    const DAS = 160; 
-    const ARR = 30;  
+    const DAS = 160;
+    const ARR = 30;
     let moveInterval: NodeJS.Timeout | null = null;
     let dasTimeout: NodeJS.Timeout | null = null;
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.repeat) return;
-      
+      // Global Pause / Reboot
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        togglePause();
+        return;
+      }
+
+      if (gameOverRef.current || isPausedRef.current) return;
+
       switch (e.key) {
         case 'ArrowLeft':
+          e.preventDefault();
+          if (e.repeat) return;
           movePiece(-1, 0);
           dasTimeout = setTimeout(() => {
             moveInterval = setInterval(() => movePiece(-1, 0), ARR);
           }, DAS);
           break;
+
         case 'ArrowRight':
+          e.preventDefault();
+          if (e.repeat) return;
           movePiece(1, 0);
           dasTimeout = setTimeout(() => {
             moveInterval = setInterval(() => movePiece(1, 0), ARR);
           }, DAS);
           break;
+
         case 'ArrowDown':
+          e.preventDefault();
           movePiece(0, 1);
-          moveInterval = setInterval(() => movePiece(0, 1), ARR);
           break;
+
         case 'ArrowUp':
-          rotatePiece();
+          e.preventDefault();
+          rotatePiece('cw');
           break;
+
+        case 'z':
+        case 'Z':
+        case 'Control':
+          e.preventDefault();
+          rotatePiece('ccw');
+          break;
+
         case ' ':
+          e.preventDefault();
           hardDrop();
           break;
+
         case 'c':
         case 'C':
+          e.preventDefault();
           holdPieceAction();
           break;
+
         case 'p':
         case 'P':
         case 'Escape':
+          e.preventDefault();
           togglePause();
           break;
       }
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         if (dasTimeout) clearTimeout(dasTimeout);
         if (moveInterval) clearInterval(moveInterval);
       }
@@ -370,13 +630,14 @@ export const useTetris = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       if (dasTimeout) clearTimeout(dasTimeout);
       if (moveInterval) clearInterval(moveInterval);
     };
-  }, [movePiece, rotatePiece, holdPieceAction, togglePause, hardDrop, gameOver, isPaused]);
+  }, [movePiece, rotatePiece, hardDrop, holdPieceAction, togglePause]);
 
   return {
     grid,
@@ -384,17 +645,19 @@ export const useTetris = () => {
     nextPieceType,
     holdPiece,
     score,
+    lines,
     gameOver,
     isPaused,
     chaos,
     thoughts,
     lockedCell,
     comboMessage,
-    togglePause,
+    wsConnected,
     ghostPosition: getGhostPosition(),
+    togglePause,
     rotatePiece,
     movePiece,
     hardDrop,
-    holdPieceAction
+    holdPieceAction,
   };
 };

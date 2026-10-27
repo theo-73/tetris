@@ -36,7 +36,7 @@ class HeuristicAnalyzer:
                     
         aggregate_height = sum(heights)
         
-        # Single-pass bumpiness
+        # Bumpiness calculation
         bumpiness = 0
         for i in range(cols - 1):
             bumpiness += abs(heights[i] - heights[i+1])
@@ -57,88 +57,124 @@ class AdversarialAgent:
         self.chaos_meter = 0
 
     def simulate_placement(self, grid, piece_type):
-        """Simulate all possible placements and return the 'best' score for the player."""
+        """
+        Simulate all possible placements and return the 'best' (minimum entropy)
+        score achievable by the player with this piece.
+        """
         shape = SHAPES[piece_type]
         best_player_score = float('inf')
         
-        # Rotations (up to 4)
+        # Test all 4 rotations
         current_shape = shape
         for _ in range(4):
-            width = len(current_shape[0])
-            for x in range(len(grid[0]) - width + 1):
-                # Drop piece
+            # Compute active column boundaries of the piece
+            active_cols = [c for r in range(len(current_shape)) for c in range(len(current_shape[r])) if current_shape[r][c]]
+            if not active_cols:
+                current_shape = rotate(current_shape)
+                continue
+            min_c = min(active_cols)
+            max_c = max(active_cols)
+            
+            # Shift x so active columns stay within [0, COLS - 1]
+            for x in range(-min_c, COLS - max_c):
+                # Verify piece can enter at y = 0
+                if not self.is_valid(grid, current_shape, x, 0):
+                    continue
+                
+                # Drop piece to the lowest valid row
                 y = 0
                 while self.is_valid(grid, current_shape, x, y + 1):
                     y += 1
                 
-                # Place piece
+                # Place piece on a temporary grid
                 temp_grid = [row[:] for row in grid]
                 for r in range(len(current_shape)):
                     for c in range(len(current_shape[r])):
-                        if current_shape[r][c]:
-                            if y + r < ROWS:
-                                temp_grid[y + r][x + c] = 1
+                        if current_shape[r][c] and (y + r < ROWS) and (0 <= x + c < COLS):
+                            temp_grid[y + r][x + c] = 1
                 
-                metrics = HeuristicAnalyzer.calculate_metrics(temp_grid)
-                # Player tries to minimize this
-                player_score = metrics["aggregate_height"] * 0.5 + metrics["holes"] * 4.0 + metrics["bumpiness"] * 1.0
+                # Simulate line clearing
+                surviving_rows = [row for row in temp_grid if not all(cell != 0 for cell in row)]
+                lines_cleared = ROWS - len(surviving_rows)
+                post_clear_grid = [[0] * COLS for _ in range(lines_cleared)] + surviving_rows
+                
+                metrics = HeuristicAnalyzer.calculate_metrics(post_clear_grid)
+                # Player seeks to minimize aggregate height, holes, and bumpiness, while maximizing line clears
+                player_score = (
+                    metrics["aggregate_height"] * 0.5 +
+                    metrics["holes"] * 4.0 +
+                    metrics["bumpiness"] * 1.0 -
+                    lines_cleared * 12.0
+                )
                 if player_score < best_player_score:
                     best_player_score = player_score
             
             current_shape = rotate(current_shape)
-            if current_shape == shape: break # Optimization for symmetric pieces
+            if current_shape == shape:
+                break # Symmetric piece optimization (e.g. 'O')
 
-        return best_player_score
+        return best_player_score if best_player_score != float('inf') else 999.0
 
     def is_valid(self, grid, shape, x, y):
         for r in range(len(shape)):
             for c in range(len(shape[r])):
                 if shape[r][c]:
-                    if y + r >= len(grid) or x + c < 0 or x + c >= len(grid[0]) or grid[y + r][x + c]:
+                    board_y = y + r
+                    board_x = x + c
+                    if board_y < 0:
+                        continue  # Allow spawning above the board
+                    if board_y >= ROWS or board_x < 0 or board_x >= COLS:
+                        return False
+                    if grid[board_y][board_x] != 0:
                         return False
         return True
 
     def decide_next_piece(self, board):
         metrics = HeuristicAnalyzer.calculate_metrics(board)
-        
-        # Piece History tracking
         piece_counts = {p: self.history.count(p) for p in self.pieces}
 
-        # Mercy Metric
+        # Mercy Protocol: If stack is dangerously high, occasionally grant relief
         is_mercy = False
-        if metrics["aggregate_height"] > 15 * len(board[0]):
-            if random.random() < 0.3:
+        if metrics["aggregate_height"] > 130:
+            if random.random() < 0.35:
                 is_mercy = True
 
         best_adversarial_piece = "I" if is_mercy else "T"
-        max_min_score = -float('inf')
+        max_adversarial_score = -float('inf')
 
         if not is_mercy:
             for piece in self.pieces:
-                # We want the piece where the player's 'best' move still results in high entropy
-                score = self.simulate_placement(board, piece)
+                # Minimum score player can achieve with this piece
+                best_player_score = self.simulate_placement(board, piece)
                 
-                # Starvation Multiplier: If player hasn't seen this piece, and it's GOOD for them (low score),
-                # we are MORE likely to withhold it.
-                starvation_mult = 1.0
-                if piece_counts.get(piece, 0) == 0:
-                    if score < 15: # If it's a helpful piece
-                        starvation_mult = 1.6 # Heavier suppression
+                # Adversary wants high player entropy (worst outcome for player)
+                adversarial_score = best_player_score
 
-                weighted_score = score * starvation_mult
+                # Correct Starvation Logic:
+                # If a piece is very helpful to the player (low player_score) and player hasn't seen it recently,
+                # the adversary WITHHOLDS it by heavily penalizing its selection probability.
+                if piece_counts.get(piece, 0) == 0 and best_player_score < 12.0:
+                    adversarial_score *= 0.25  # Suppress helpful piece so adversary picks a more disruptive one
 
-                if weighted_score > max_min_score:
-                    max_min_score = weighted_score
+                # Diversity & Anti-Spam: Penalize recently repeated pieces
+                repeat_penalty = piece_counts.get(piece, 0) * 2.5
+                adversarial_score -= repeat_penalty
+                
+                # Subtle tie-break entropy
+                adversarial_score += random.uniform(-0.15, 0.15)
+
+                if adversarial_score > max_adversarial_score:
+                    max_adversarial_score = adversarial_score
                     best_adversarial_piece = piece
         else:
-            max_min_score = 0 # Lower chaos when mercy is active
+            max_adversarial_score = 0.0
 
         # Update History
         self.history.append(best_adversarial_piece)
         if len(self.history) > 12:
             self.history.pop(0)
 
-        # Reactive Mockery Logic
+        # Reactive Agent Intel Thoughts
         base_thoughts = [
             "Calculating optimal disruption vectors...",
             "Visualizing your failure. Convergence complete.",
@@ -146,11 +182,11 @@ class AdversarialAgent:
             "Heuristic thresholds exceeded. Chaos imminent."
         ]
         
-        if metrics["holes"] > 5:
+        if metrics["holes"] > 4:
             base_thoughts.append(f"Detected {metrics['holes']} system vulnerabilities. Processing purge...")
-        if metrics["bumpiness"] > 15:
+        if metrics["bumpiness"] > 12:
             base_thoughts.append("Structural instability confirmed. Well-dependency noted.")
-        if metrics["aggregate_height"] > 100:
+        if metrics["aggregate_height"] > 80:
             base_thoughts.append("Atmospheric pressure rising. Critical altitude reached.")
             
         thoughts = base_thoughts
@@ -158,7 +194,7 @@ class AdversarialAgent:
             thoughts = ["Mercy protocol active. For now...", "Providing structural stability."]
 
         # Normalize score for chaos meter (0-100)
-        chaos_meter = min(100, int((max_min_score / 60.0) * 100))
+        chaos_meter = min(100, max(0, int((max_adversarial_score / 50.0) * 100)))
 
         return {
             "piece": best_adversarial_piece,
@@ -172,7 +208,7 @@ class GameEngine:
         self.height = height
         self.grid = [[0 for _ in range(width)] for _ in range(height)]
         self.agent = AdversarialAgent()
-        self.locked_cell = None # (y, x)
+        self.locked_cell = None # {"x": int, "y": int} or None
 
     def reset(self):
         self.grid = [[0 for _ in range(self.width)] for _ in range(self.height)]
@@ -193,7 +229,7 @@ class GameEngine:
         for r in range(self.height):
             for c in range(self.width):
                 if self.grid[r][c] == 0:
-                    empty_cells.append((r, c))
+                    empty_cells.append({"x": c, "y": r})
         
         if empty_cells:
             self.locked_cell = random.choice(empty_cells)
