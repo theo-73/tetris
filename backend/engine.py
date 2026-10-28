@@ -150,18 +150,14 @@ class AdversarialAgent:
                 # Adversary wants high player entropy (worst outcome for player)
                 adversarial_score = best_player_score
 
-                # Correct Starvation Logic:
-                # If a piece is very helpful to the player (low player_score) and player hasn't seen it recently,
-                # the adversary WITHHOLDS it by heavily penalizing its selection probability.
-                if piece_counts.get(piece, 0) == 0 and best_player_score < 12.0:
-                    adversarial_score *= 0.25  # Suppress helpful piece so adversary picks a more disruptive one
-
-                # Diversity & Anti-Spam: Penalize recently repeated pieces
-                repeat_penalty = piece_counts.get(piece, 0) * 2.5
-                adversarial_score -= repeat_penalty
-                
-                # Subtle tie-break entropy
-                adversarial_score += random.uniform(-0.15, 0.15)
+                # Continuous Adversarial Scoring:
+                # 1. Base score: worst-case player outcome
+                # 2. Starvation bonus: encourages withholding helpful pieces that haven't been dealt recently
+                # 3. Repetition penalty: prevents clustered repetition without creating artificial threshold cliffs
+                count = piece_counts.get(piece, 0)
+                starvation_bonus = (12 - count) * 0.35 if best_player_score < 14.0 else 0.0
+                repeat_penalty = count * 3.5
+                adversarial_score = best_player_score - starvation_bonus - repeat_penalty + random.uniform(-0.15, 0.15)
 
                 if adversarial_score > max_adversarial_score:
                     max_adversarial_score = adversarial_score

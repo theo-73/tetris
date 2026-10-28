@@ -168,19 +168,15 @@ export class AdversarialAgent {
     if (!isMercy) {
       for (const piece of this.pieces) {
         const bestPlayerScore = this.simulatePlacement(board, piece);
-        let adversarialScore = bestPlayerScore;
-
-        // Starvation logic: suppress helpful pieces not seen recently
-        if ((pieceCounts[piece] || 0) === 0 && bestPlayerScore < 12.0) {
-          adversarialScore *= 0.25;
-        }
-
-        // Diversity damping: penalize repeated pieces
-        const repeatPenalty = (pieceCounts[piece] || 0) * 2.5;
-        adversarialScore -= repeatPenalty;
-
-        // Subtle entropy noise
-        adversarialScore += (Math.random() - 0.5) * 0.3;
+        
+        // Continuous Adversarial Scoring:
+        // 1. Base score: worst-case player outcome
+        // 2. Starvation bonus: encourages withholding helpful pieces that haven't been dealt recently
+        // 3. Repetition penalty: prevents clustered repetition without creating artificial threshold cliffs
+        const count = pieceCounts[piece] || 0;
+        const starvationBonus = count === 0 && bestPlayerScore < 14.0 ? (12 - count) * 0.35 : 0.0;
+        const repeatPenalty = count * 3.5;
+        const adversarialScore = bestPlayerScore - starvationBonus - repeatPenalty + (Math.random() - 0.5) * 0.2;
 
         if (adversarialScore > maxAdversarialScore) {
           maxAdversarialScore = adversarialScore;

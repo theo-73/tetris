@@ -39,6 +39,7 @@ async def websocket_endpoint(websocket: WebSocket):
     
     # State synchronization
     lock_id = 0
+    is_paused = True
     last_active_pos = {"x": 4, "y": 0}
 
     async def shadow_agent_loop():
@@ -47,8 +48,8 @@ async def websocket_endpoint(websocket: WebSocket):
             while True:
                 await asyncio.sleep(8)
                 
-                # Check if cell is already locked
-                if engine.locked_cell is not None:
+                # Only sabotage during active gameplay
+                if is_paused or engine.locked_cell is not None:
                     continue
 
                 # Target a cell near where the player last navigated
@@ -93,9 +94,24 @@ async def websocket_endpoint(websocket: WebSocket):
             message = json.loads(data)
             msg_type = message.get("type")
             
-            if msg_type == "BOARD_STATE":
-                board = message.get("payload", [])
+            if msg_type == "PAUSE_STATE":
+                is_paused = bool(message.get("payload", True))
+
+            elif msg_type == "BOARD_STATE":
+                payload = message.get("payload", [])
+                if isinstance(payload, dict):
+                    board = payload.get("grid", [])
+                    engine.locked_cell = payload.get("locked_cell")
+                else:
+                    board = payload
                 engine.update_board(board)
+                adversarial_data = engine.get_next_piece()
+                await websocket.send_json({
+                    "type": "ADVERSARIAL_UPDATE",
+                    "payload": adversarial_data
+                })
+
+            elif msg_type == "HOLD_EVENT":
                 adversarial_data = engine.get_next_piece()
                 await websocket.send_json({
                     "type": "ADVERSARIAL_UPDATE",
@@ -109,6 +125,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "RESET_GAME":
                 lock_id += 1
+                is_paused = False
                 engine.reset()
                 fresh_piece = engine.get_next_piece()
                 await websocket.send_json({"type": "RESET_ACK"})
@@ -118,6 +135,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
             elif msg_type == "LIVE_UPDATE":
+                if is_paused:
+                    continue
+
                 active_piece = message.get("payload", {})
                 raw_x = active_piece.get("x", 4)
                 raw_y = active_piece.get("y", 0)
@@ -125,9 +145,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 last_active_pos["x"] = max(0, min(9, int(raw_x)))
                 last_active_pos["y"] = max(0, min(19, int(raw_y)))
                 
-                # Predictive targeting when piece is deeper in the well
+                # Predictive targeting with pure pseudo-random distribution
                 if last_active_pos["y"] > 8 and engine.locked_cell is None:
-                    if (hash(str(active_piece)) % 100) < 14:
+                    if random.random() < 0.14:
                         tx = max(0, min(9, last_active_pos["x"]))
                         ty = max(0, min(19, last_active_pos["y"] + 2))
                         

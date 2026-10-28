@@ -22,9 +22,9 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
   const [grid, setGrid] = useState<(PieceType | number)[][]>(INITIAL_GRID);
   const [activePiece, setActivePiece] = useState<Piece | null>(null);
-  const [nextPieceType, setNextPieceType] = useState<PieceType>(() => {
-    return new AdversarialAgent().decideNextPiece(INITIAL_GRID).piece;
-  });
+  
+  // Issue 12: Deterministic initial state to prevent SSR hydration mismatch
+  const [nextPieceType, setNextPieceType] = useState<PieceType>('T');
   const [holdPiece, setHoldPiece] = useState<PieceType | null>(null);
   const [canHold, setCanHold] = useState(true);
   const [score, setScore] = useState(0);
@@ -64,6 +64,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
   // Refs for current mutable state
   const activePieceRef = useRef<Piece | null>(null);
+  const nextPieceTypeRef = useRef<PieceType>('T');
   const gridRef = useRef<(PieceType | number)[][]>(grid);
   const lockedCellRef = useRef<Point | null>(null);
   const isPausedRef = useRef(isPaused);
@@ -73,6 +74,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
   // Synchronize refs after render in compliance with React 19 rules
   useEffect(() => {
     activePieceRef.current = activePiece;
+    nextPieceTypeRef.current = nextPieceType;
     gridRef.current = grid;
     lockedCellRef.current = lockedCell;
     isPausedRef.current = isPaused;
@@ -80,14 +82,14 @@ export const useTetris = (options?: UseTetrisOptions) => {
   });
 
   // Helper to trigger audio safely
-  const triggerAudio = (event: AudioEventType) => {
+  const triggerAudio = useCallback((event: AudioEventType) => {
     if (onAudioRef.current) {
       onAudioRef.current(event);
     }
-  };
+  }, []);
 
   // Helper to create a piece
-  const createPiece = (type: PieceType): Piece => {
+  const createPiece = useCallback((type: PieceType): Piece => {
     const shape = SHAPES[type];
     return {
       type,
@@ -98,34 +100,36 @@ export const useTetris = (options?: UseTetrisOptions) => {
       rotation: 0,
       shape: shape.map(row => [...row]),
     };
-  };
+  }, []);
 
-  // Optional Remote WebSocket Connection (Connects if server is running, falls back gracefully to Native Engine)
+  // Issue 11: Controlled remote WebSocket connection with retry cap to prevent spam
   useEffect(() => {
-    // Only attempt remote WS if explicitly configured or running on standard local dev
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL || (
       typeof window !== 'undefined' && window.location.hostname === 'localhost'
         ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8000/ws`
         : null
     );
 
-    if (!wsUrl) {
-      // Running standalone / Vercel deployment: Native client-side engine is active
-      return;
-    }
+    if (!wsUrl) return;
 
     let socket: WebSocket | null = null;
     let reconnectTimeout: NodeJS.Timeout | null = null;
     let isMounted = true;
+    let retryCount = 0;
+    const MAX_RETRIES = 3;
 
     const connect = () => {
       if (!isMounted) return;
+      if (retryCount >= MAX_RETRIES) {
+        return;
+      }
 
       try {
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
           if (!isMounted) return;
+          retryCount = 0;
           setWsConnected(true);
           setThoughts(prev => [
             { text: "REMOTE_NEURAL_LINK_ESTABLISHED // WS_ONLINE", time: new Date().toLocaleTimeString() },
@@ -164,7 +168,10 @@ export const useTetris = (options?: UseTetrisOptions) => {
         socket.onclose = () => {
           if (!isMounted) return;
           setWsConnected(false);
-          reconnectTimeout = setTimeout(connect, 4000);
+          retryCount++;
+          if (retryCount < MAX_RETRIES) {
+            reconnectTimeout = setTimeout(connect, 4000);
+          }
         };
 
         socket.onerror = () => {
@@ -173,8 +180,10 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
         wsRef.current = socket;
       } catch {
-        // Quiet fallback to native engine
-        reconnectTimeout = setTimeout(connect, 4000);
+        retryCount++;
+        if (retryCount < MAX_RETRIES) {
+          reconnectTimeout = setTimeout(connect, 4000);
+        }
       }
     };
 
@@ -220,18 +229,29 @@ export const useTetris = (options?: UseTetrisOptions) => {
     const currentLocked = lockedCellRef.current;
     const newGrid = currentGrid.map(row => [...row]);
 
-    // Place piece blocks on board
+    // Issue 3: Detect Ceiling Lock Out immediately
+    let hasLockOut = false;
     pieceToLock.shape.forEach((row, y) => {
       row.forEach((value, x) => {
         if (value) {
           const gridY = pieceToLock.position.y + y;
           const gridX = pieceToLock.position.x + x;
-          if (gridY >= 0 && gridY < ROWS && gridX >= 0 && gridX < COLS) {
+          if (gridY < 0) {
+            hasLockOut = true;
+          } else if (gridY < ROWS && gridX >= 0 && gridX < COLS) {
             newGrid[gridY][gridX] = pieceToLock.type;
           }
         }
       });
     });
+
+    if (hasLockOut) {
+      setGameOver(true);
+      setIsPaused(true);
+      setActivePiece(null);
+      triggerAudio('gameover');
+      return;
+    }
 
     // Check completed rows
     const rowsToClear: number[] = [];
@@ -266,9 +286,12 @@ export const useTetris = (options?: UseTetrisOptions) => {
         shadowSaboteurRef.current?.clearLock();
       }
     } else if (currentLocked && cleared > 0) {
-      // Shift locked cell down for rows cleared above it
-      const rowsAbove = rowsToClear.filter(y => y < currentLocked.y).length;
-      updatedLockedCell = { ...currentLocked, y: currentLocked.y + rowsAbove };
+      // Issue 1 Fix: Locked cell only shifts down for rows cleared BELOW it
+      const rowsBelow = rowsToClear.filter(y => y > currentLocked.y).length;
+      updatedLockedCell = {
+        ...currentLocked,
+        y: Math.min(ROWS - 1, currentLocked.y + rowsBelow)
+      };
     }
 
     // Process cleared rows
@@ -313,19 +336,16 @@ export const useTetris = (options?: UseTetrisOptions) => {
     setLockedCell(updatedLockedCell);
     setCanHold(true);
 
-    // Spawn next piece from preview and compute next adversary move
-    setNextPieceType(currentNext => {
-      const pieceToSpawn = createPiece(currentNext);
-      
-      // Check top-out / game-over
-      if (!isValidMove(finalGrid, pieceToSpawn, { x: 0, y: 0 }, updatedLockedCell)) {
-        setGameOver(true);
-        setIsPaused(true);
-        setActivePiece(null);
-        triggerAudio('gameover');
-        return currentNext;
-      }
+    // Issue 9 Fix: Execute state updates outside nested updater functions (pure React 19)
+    const nextType = nextPieceTypeRef.current;
+    const pieceToSpawn = createPiece(nextType);
 
+    if (!isValidMove(finalGrid, pieceToSpawn, { x: 0, y: 0 }, updatedLockedCell)) {
+      setGameOver(true);
+      setIsPaused(true);
+      setActivePiece(null);
+      triggerAudio('gameover');
+    } else {
       setActivePiece(pieceToSpawn);
 
       // In Native AI mode, compute the next preview piece for the next turn
@@ -336,17 +356,18 @@ export const useTetris = (options?: UseTetrisOptions) => {
           { text: decision.thought, time: new Date().toLocaleTimeString() },
           ...prev
         ].slice(0, 15));
-        return decision.piece;
+        setNextPieceType(decision.piece);
       }
-
-      return currentNext;
-    });
-
-    // In WebSocket mode, send board state to server
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
     }
-  }, [clearLockTimer]);
+
+    // Issue 8: In WebSocket mode, send board state with grid and locked cell
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'BOARD_STATE',
+        payload: { grid: finalGrid, locked_cell: updatedLockedCell }
+      }));
+    }
+  }, [clearLockTimer, createPiece, triggerAudio]);
 
   // Move Piece
   const movePiece = useCallback((dx: number, dy: number): boolean => {
@@ -400,7 +421,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
     }
 
     return false;
-  }, [clearLockTimer, lockPiece]);
+  }, [clearLockTimer, lockPiece, triggerAudio]);
 
   // Rotate Piece
   const rotatePiece = useCallback((dir: 'cw' | 'ccw' = 'cw') => {
@@ -445,7 +466,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
         return;
       }
     }
-  }, [clearLockTimer, lockPiece]);
+  }, [clearLockTimer, lockPiece, triggerAudio]);
 
   // Hard Drop
   const hardDrop = useCallback(() => {
@@ -468,7 +489,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
     triggerAudio('harddrop');
     setScore(prev => prev + dropY * 2);
     lockPiece(droppedPiece);
-  }, [lockPiece]);
+  }, [lockPiece, triggerAudio]);
 
   // Hold Action
   const holdPieceAction = useCallback(() => {
@@ -491,22 +512,34 @@ export const useTetris = (options?: UseTetrisOptions) => {
       setHoldPiece(currentType);
       setCanHold(false);
 
-      // Advance piece from next queue
-      setNextPieceType(currentNext => {
-        const pieceToSpawn = createPiece(currentNext);
-        if (isValidMove(currentGrid, pieceToSpawn, { x: 0, y: 0 }, currentLocked)) {
-          setActivePiece(pieceToSpawn);
-        } else {
-          setGameOver(true);
-          setIsPaused(true);
-          setActivePiece(null);
-        }
-        
-        // Native adversarial piece generation
-        return localAgentRef.current.decideNextPiece(currentGrid).piece;
-      });
+      // Advance piece from next queue (pure state update outside setNextPieceType)
+      const nextType = nextPieceTypeRef.current;
+      const pieceToSpawn = createPiece(nextType);
+      if (isValidMove(currentGrid, pieceToSpawn, { x: 0, y: 0 }, currentLocked)) {
+        setActivePiece(pieceToSpawn);
+      } else {
+        setGameOver(true);
+        setIsPaused(true);
+        setActivePiece(null);
+        triggerAudio('gameover');
+      }
+
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        const decision = localAgentRef.current.decideNextPiece(currentGrid);
+        setChaos(decision.chaos);
+        setThoughts(prev => [
+          { text: decision.thought, time: new Date().toLocaleTimeString() },
+          ...prev
+        ].slice(0, 15));
+        setNextPieceType(decision.piece);
+      }
     }
-  }, [canHold, holdPiece, clearLockTimer]);
+
+    // Issue 7: Synchronize hold event with remote WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'HOLD_EVENT' }));
+    }
+  }, [canHold, holdPiece, clearLockTimer, createPiece, triggerAudio]);
 
   // Ghost Position
   const getGhostPosition = useCallback((): Point | null => {
@@ -547,6 +580,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'RESET_GAME' }));
+        wsRef.current.send(JSON.stringify({ type: 'PAUSE_STATE', payload: { is_paused: false } }));
       }
       return;
     }
@@ -556,16 +590,22 @@ export const useTetris = (options?: UseTetrisOptions) => {
       if (!nextState) {
         lastTimeRef.current = performance.now();
         if (!activePieceRef.current) {
-          const piece = createPiece(nextPieceType);
+          const piece = createPiece(nextPieceTypeRef.current);
           setActivePiece(piece);
           setNextPieceType(localAgentRef.current.decideNextPiece(gridRef.current).piece);
         }
       } else {
         clearLockTimer();
       }
+
+      // Issue 6: Transmit pause state to backend shadow agent loop
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'PAUSE_STATE', payload: { is_paused: nextState } }));
+      }
+
       return nextState;
     });
-  }, [clearLockTimer, nextPieceType]);
+  }, [clearLockTimer, createPiece]);
 
   // Continuous rAF Game Tick Loop
   const loopRef = useRef<(time: number) => void>(() => {});
@@ -608,12 +648,25 @@ export const useTetris = (options?: UseTetrisOptions) => {
     return () => clearInterval(pulseInterval);
   }, []);
 
-  // Keyboard controls with DAS/ARR and preventDefault
+  // Issue 4 Fix: Leak-free DAS/ARR keyboard controls with distinct directional ownership
   useEffect(() => {
     const DAS = 160;
     const ARR = 30;
+    let activeDir: 'left' | 'right' | null = null;
     let moveInterval: NodeJS.Timeout | null = null;
     let dasTimeout: NodeJS.Timeout | null = null;
+
+    const clearMovementTimers = () => {
+      if (dasTimeout) {
+        clearTimeout(dasTimeout);
+        dasTimeout = null;
+      }
+      if (moveInterval) {
+        clearInterval(moveInterval);
+        moveInterval = null;
+      }
+      activeDir = null;
+    };
 
     const handleKeyDown = (e: KeyboardEvent) => {
       // Global Pause / Reboot
@@ -628,19 +681,31 @@ export const useTetris = (options?: UseTetrisOptions) => {
       switch (e.key) {
         case 'ArrowLeft':
           e.preventDefault();
-          if (e.repeat) return;
+          if (activeDir === 'left') return;
+          clearMovementTimers();
+          activeDir = 'left';
           movePiece(-1, 0);
           dasTimeout = setTimeout(() => {
-            moveInterval = setInterval(() => movePiece(-1, 0), ARR);
+            moveInterval = setInterval(() => {
+              if (activeDir === 'left') {
+                movePiece(-1, 0);
+              }
+            }, ARR);
           }, DAS);
           break;
 
         case 'ArrowRight':
           e.preventDefault();
-          if (e.repeat) return;
+          if (activeDir === 'right') return;
+          clearMovementTimers();
+          activeDir = 'right';
           movePiece(1, 0);
           dasTimeout = setTimeout(() => {
-            moveInterval = setInterval(() => movePiece(1, 0), ARR);
+            moveInterval = setInterval(() => {
+              if (activeDir === 'right') {
+                movePiece(1, 0);
+              }
+            }, ARR);
           }, DAS);
           break;
 
@@ -682,9 +747,10 @@ export const useTetris = (options?: UseTetrisOptions) => {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        if (dasTimeout) clearTimeout(dasTimeout);
-        if (moveInterval) clearInterval(moveInterval);
+      if (e.key === 'ArrowLeft' && activeDir === 'left') {
+        clearMovementTimers();
+      } else if (e.key === 'ArrowRight' && activeDir === 'right') {
+        clearMovementTimers();
       }
     };
 
@@ -694,8 +760,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
-      if (dasTimeout) clearTimeout(dasTimeout);
-      if (moveInterval) clearInterval(moveInterval);
+      clearMovementTimers();
     };
   }, [movePiece, rotatePiece, hardDrop, holdPieceAction, togglePause]);
 

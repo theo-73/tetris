@@ -2,8 +2,15 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useTetris, AudioEventType } from '../hooks/useTetris';
 import { COLS, ROWS, COLORS, SHAPES, PieceType } from '../lib/tetris';
+import { 
+  Volume2, VolumeX, HelpCircle, X, 
+  RotateCw, RotateCcw, Play, Pause, 
+  ArrowLeft, ArrowRight, ArrowDown, ArrowDownToLine, RefreshCw 
+} from 'lucide-react';
 
 const BLOCK_SIZE = 30;
+const LOGICAL_WIDTH = COLS * BLOCK_SIZE;
+const LOGICAL_HEIGHT = ROWS * BLOCK_SIZE;
 
 interface Particle {
   x: number;
@@ -15,7 +22,7 @@ interface Particle {
   color: string;
 }
 
-// Procedural Web Audio Synthesizer
+// Issue 19 Fix: Procedural Web Audio Synthesizer with automatic node disconnection on end
 class SoundSynthesizer {
   private ctx: AudioContext | null = null;
   public enabled: boolean = true;
@@ -30,6 +37,22 @@ class SoundSynthesizer {
     if (this.ctx && this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
+  }
+
+  private connectAndPlay(osc: OscillatorNode, gain: GainNode, start: number, stop: number) {
+    if (!this.ctx) return;
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+    osc.onended = () => {
+      try {
+        osc.disconnect();
+        gain.disconnect();
+      } catch {
+        // Safe ignore if already cleaned up
+      }
+    };
+    osc.start(start);
+    osc.stop(stop);
   }
 
   play(event: AudioEventType) {
@@ -48,10 +71,7 @@ class SoundSynthesizer {
         osc.frequency.setValueAtTime(600, now);
         gain.gain.setValueAtTime(0.04, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.03);
+        this.connectAndPlay(osc, gain, now, now + 0.03);
         break;
       }
       case 'rotate': {
@@ -62,10 +82,7 @@ class SoundSynthesizer {
         osc.frequency.exponentialRampToValueAtTime(800, now + 0.05);
         gain.gain.setValueAtTime(0.05, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.05);
+        this.connectAndPlay(osc, gain, now, now + 0.05);
         break;
       }
       case 'softdrop': {
@@ -75,10 +92,7 @@ class SoundSynthesizer {
         osc.frequency.setValueAtTime(200, now);
         gain.gain.setValueAtTime(0.02, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.02);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.02);
+        this.connectAndPlay(osc, gain, now, now + 0.02);
         break;
       }
       case 'harddrop': {
@@ -89,10 +103,7 @@ class SoundSynthesizer {
         osc.frequency.exponentialRampToValueAtTime(30, now + 0.1);
         gain.gain.setValueAtTime(0.12, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.1);
+        this.connectAndPlay(osc, gain, now, now + 0.1);
         break;
       }
       case 'lock': {
@@ -102,10 +113,7 @@ class SoundSynthesizer {
         osc.frequency.setValueAtTime(260, now);
         gain.gain.setValueAtTime(0.05, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.04);
+        this.connectAndPlay(osc, gain, now, now + 0.04);
         break;
       }
       case 'clear': {
@@ -116,10 +124,7 @@ class SoundSynthesizer {
           osc.frequency.setValueAtTime(freq, now + idx * 0.04);
           gain.gain.setValueAtTime(0.08, now + idx * 0.04);
           gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.04 + 0.12);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now + idx * 0.04);
-          osc.stop(now + idx * 0.04 + 0.12);
+          this.connectAndPlay(osc, gain, now + idx * 0.04, now + idx * 0.04 + 0.12);
         });
         break;
       }
@@ -131,10 +136,7 @@ class SoundSynthesizer {
           osc.frequency.setValueAtTime(freq, now + idx * 0.06);
           gain.gain.setValueAtTime(0.12, now + idx * 0.06);
           gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.06 + 0.25);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now + idx * 0.06);
-          osc.stop(now + idx * 0.06 + 0.25);
+          this.connectAndPlay(osc, gain, now + idx * 0.06, now + idx * 0.06 + 0.25);
         });
         break;
       }
@@ -146,10 +148,7 @@ class SoundSynthesizer {
         osc.frequency.exponentialRampToValueAtTime(100, now + 0.3);
         gain.gain.setValueAtTime(0.2, now);
         gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.3);
+        this.connectAndPlay(osc, gain, now, now + 0.3);
         break;
       }
       case 'gameover': {
@@ -160,10 +159,7 @@ class SoundSynthesizer {
           osc.frequency.setValueAtTime(freq, now + idx * 0.1);
           gain.gain.setValueAtTime(0.1, now + idx * 0.1);
           gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.1 + 0.18);
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.start(now + idx * 0.1);
-          osc.stop(now + idx * 0.1 + 0.18);
+          this.connectAndPlay(osc, gain, now + idx * 0.1, now + idx * 0.1 + 0.18);
         });
         break;
       }
@@ -202,7 +198,7 @@ export const TetrisBoard: React.FC = () => {
         requestAnimationFrame(() => setHighScore(val));
       }
     } catch {
-      // localStorage may be unavailable
+      // localStorage may be unavailable in some environments
     }
   }, []);
 
@@ -227,13 +223,26 @@ export const TetrisBoard: React.FC = () => {
     synth.enabled = nextState;
   };
 
+  // Issue 16 Fix: Trap keyboard events when manual modal is visible so game input is not hijacked
+  useEffect(() => {
+    if (!showManual) return;
+    const handleModalKeyDown = (e: KeyboardEvent) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') {
+        setShowManual(false);
+      }
+    };
+    window.addEventListener('keydown', handleModalKeyDown, true);
+    return () => window.removeEventListener('keydown', handleModalKeyDown, true);
+  }, [showManual]);
+
   // Pre-seed background cyber substrate rain
   useEffect(() => {
     const rain = [];
     for (let i = 0; i < 30; i++) {
       rain.push({
-        x: Math.random() * (COLS * BLOCK_SIZE),
-        y: Math.random() * (ROWS * BLOCK_SIZE),
+        x: Math.random() * LOGICAL_WIDTH,
+        y: Math.random() * LOGICAL_HEIGHT,
         char: String.fromCharCode(0x30A0 + Math.floor(Math.random() * 96)),
         speed: 0.5 + Math.random() * 1.5,
       });
@@ -274,7 +283,7 @@ export const TetrisBoard: React.FC = () => {
       shakeIntensityRef.current = 14;
       for (let i = 0; i < 40; i++) {
         particlesRef.current.push({
-          x: Math.random() * (COLS * BLOCK_SIZE),
+          x: Math.random() * LOGICAL_WIDTH,
           y: (ROWS - 4) * BLOCK_SIZE + Math.random() * (4 * BLOCK_SIZE),
           vx: (Math.random() - 0.5) * 6,
           vy: -Math.random() * 6 - 2,
@@ -314,7 +323,7 @@ export const TetrisBoard: React.FC = () => {
     };
   });
 
-  // Dedicated Continuous Canvas Render Loop (60 FPS)
+  // Issue 15 Fix: Dedicated HiDPI / Retina Canvas Render Loop (60 FPS) with devicePixelRatio
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -324,9 +333,17 @@ export const TetrisBoard: React.FC = () => {
     let animationId: number;
 
     const render = () => {
+      const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1;
+      
+      // Ensure canvas backing buffer matches physical pixels
+      if (canvas.width !== LOGICAL_WIDTH * dpr || canvas.height !== LOGICAL_HEIGHT * dpr) {
+        canvas.width = LOGICAL_WIDTH * dpr;
+        canvas.height = LOGICAL_HEIGHT * dpr;
+      }
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
       const state = stateRef.current;
-      const width = canvas.width;
-      const height = canvas.height;
 
       // Decay shake
       if (shakeIntensityRef.current > 0) {
@@ -336,11 +353,11 @@ export const TetrisBoard: React.FC = () => {
         ? (Math.sin(Date.now() / 20) * shakeIntensityRef.current)
         : 0;
 
-      ctx.clearRect(0, 0, width, height);
+      ctx.clearRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
       // 1. Dark Background Substrate
       ctx.fillStyle = '#050508';
-      ctx.fillRect(0, 0, width, height);
+      ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
       // 2. Continuous Cyber Rain Substrate
       ctx.font = '10px monospace';
@@ -348,9 +365,9 @@ export const TetrisBoard: React.FC = () => {
       rainMatrixRef.current.forEach(item => {
         ctx.fillText(item.char, item.x, item.y);
         item.y += item.speed;
-        if (item.y > height) {
+        if (item.y > LOGICAL_HEIGHT) {
           item.y = -10;
-          item.x = Math.random() * width;
+          item.x = Math.random() * LOGICAL_WIDTH;
         }
       });
 
@@ -466,7 +483,7 @@ export const TetrisBoard: React.FC = () => {
       // Combo Text Overlay with Dynamic Pulsing
       if (state.comboMessage) {
         ctx.save();
-        ctx.translate(width / 2, height / 2);
+        ctx.translate(LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2);
         const scale = 1 + Math.sin(Date.now() / 70) * 0.08;
         ctx.scale(scale, scale);
         ctx.font = 'bold 26px Orbitron, sans-serif';
@@ -481,34 +498,34 @@ export const TetrisBoard: React.FC = () => {
       // Game Over Overlay
       if (state.gameOver) {
         ctx.fillStyle = 'rgba(15, 0, 0, 0.9)';
-        ctx.fillRect(0, 0, width, height);
+        ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
         ctx.fillStyle = '#ef4444';
         ctx.font = 'bold 24px Orbitron, sans-serif';
         ctx.textAlign = 'center';
         ctx.shadowBlur = 15;
         ctx.shadowColor = '#ef4444';
-        ctx.fillText('CRITICAL_FAILURE', width / 2, height / 2 - 24);
+        ctx.fillText('CRITICAL_FAILURE', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 - 24);
 
         ctx.shadowBlur = 0;
         ctx.font = '12px Orbitron, sans-serif';
         ctx.fillStyle = '#9ca3af';
-        ctx.fillText('SYSTEM OVERRUN BY ENTROPY', width / 2, height / 2 + 8);
+        ctx.fillText('SYSTEM OVERRUN BY ENTROPY', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 + 8);
         ctx.fillStyle = '#22d3ee';
-        ctx.fillText('PRESS [ENTER] TO REBOOT', width / 2, height / 2 + 36);
+        ctx.fillText('PRESS [ENTER] TO REBOOT', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 + 36);
       } else if (state.isPaused) {
         // Paused Overlay
         ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
-        ctx.fillRect(0, 0, width, height);
+        ctx.fillRect(0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT);
 
         ctx.fillStyle = state.themeColor;
         ctx.font = 'bold 26px Orbitron, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('STANDBY', width / 2, height / 2 - 16);
+        ctx.fillText('STANDBY', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 - 16);
 
         ctx.font = '12px Orbitron, sans-serif';
         ctx.fillStyle = '#9ca3af';
-        ctx.fillText('PRESS [ENTER] TO ENGAGE', width / 2, height / 2 + 24);
+        ctx.fillText('PRESS [ENTER] TO ENGAGE', LOGICAL_WIDTH / 2, LOGICAL_HEIGHT / 2 + 24);
       }
 
       animationId = requestAnimationFrame(render);
@@ -533,6 +550,39 @@ export const TetrisBoard: React.FC = () => {
       </div>
     );
   };
+
+  // Issue 21: Helper to support mobile tap-and-hold repeating movement
+  const useTouchHold = (action: () => void) => {
+    const timerRef = useRef<NodeJS.Timeout | null>(null);
+    const intervalRef = useRef<NodeJS.Timeout | null>(null);
+
+    const clear = () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      timerRef.current = null;
+      intervalRef.current = null;
+    };
+
+    const start = (e: React.TouchEvent | React.MouseEvent) => {
+      e.preventDefault();
+      action();
+      timerRef.current = setTimeout(() => {
+        intervalRef.current = setInterval(action, 80);
+      }, 180);
+    };
+
+    return {
+      onTouchStart: start,
+      onTouchEnd: clear,
+      onMouseDown: start,
+      onMouseUp: clear,
+      onMouseLeave: clear,
+    };
+  };
+
+  const leftHold = useTouchHold(() => movePiece(-1, 0));
+  const rightHold = useTouchHold(() => movePiece(1, 0));
+  const downHold = useTouchHold(() => movePiece(0, 1));
 
   return (
     <div className="flex flex-col lg:flex-row items-center lg:items-start justify-center gap-6 p-4 sm:p-8 bg-black text-white font-share-tech min-h-screen selection:bg-cyan-500/30 relative overflow-hidden">
@@ -559,16 +609,19 @@ export const TetrisBoard: React.FC = () => {
           </div>
         </div>
 
-        {/* Entropy Pulse Bar */}
+        {/* Issue 18 Fix: GPU-accelerated scaleY transform instead of layout-reflow height */}
         <div className="p-4 border border-red-950/40 bg-black/85 backdrop-blur-xl relative overflow-hidden">
           <div className="text-[10px] font-bold text-red-500 uppercase tracking-[0.2em] mb-3 font-orbitron flex justify-between items-center">
             <span>Entropy Pulse</span>
             <span className="text-[9px] tabular-nums">{chaos}%</span>
           </div>
-          <div className="h-44 w-full bg-black border border-red-900/30 relative overflow-hidden flex flex-col-reverse rounded">
+          <div className="h-44 w-full bg-black border border-red-900/30 relative overflow-hidden rounded">
             <div 
-              className="w-full bg-gradient-to-t from-red-950 via-red-600 to-red-400 transition-all duration-500"
-              style={{ height: `${chaos}%`, boxShadow: '0 0 20px rgba(239, 68, 68, 0.3)' }}
+              className="h-full w-full bg-gradient-to-t from-red-950 via-red-600 to-red-400 origin-bottom transition-transform duration-300 ease-out"
+              style={{ 
+                transform: `scaleY(${Math.max(0, Math.min(100, chaos)) / 100})`, 
+                boxShadow: '0 0 20px rgba(239, 68, 68, 0.3)' 
+              }}
             />
             <div className="absolute inset-0 bg-[repeating-linear-gradient(0deg,transparent,transparent_2px,rgba(0,0,0,0.5)_2px,rgba(0,0,0,0.5)_4px)] pointer-events-none" />
           </div>
@@ -609,17 +662,22 @@ export const TetrisBoard: React.FC = () => {
           </div>
           <div className="flex flex-col items-end gap-1">
             <div className="flex items-center gap-1.5">
+              {/* Issue 24: Lucide icons replacing raw emoji and text */}
               <button
                 onClick={() => setShowManual(true)}
-                className="text-[9px] font-orbitron px-2 py-0.5 border border-cyan-800/80 rounded hover:border-cyan-400 bg-cyan-950/40 text-cyan-300 transition-colors cursor-pointer"
+                className="text-[9px] font-orbitron px-2.5 py-1 border border-cyan-800/80 rounded hover:border-cyan-400 bg-cyan-950/40 text-cyan-300 transition-colors cursor-pointer flex items-center gap-1"
+                aria-label="Open Operational Manual"
               >
-                [?] MANUAL / README
+                <HelpCircle className="w-3 h-3" />
+                <span>MANUAL</span>
               </button>
               <button
                 onClick={toggleSound}
-                className="text-[9px] font-orbitron px-2 py-0.5 border border-gray-800 rounded hover:border-cyan-500/50 transition-colors text-gray-400 hover:text-white cursor-pointer"
+                className="text-[9px] font-orbitron px-2.5 py-1 border border-gray-800 rounded hover:border-cyan-500/50 transition-colors text-gray-400 hover:text-white cursor-pointer flex items-center gap-1"
+                aria-label={soundEnabled ? "Mute Audio" : "Enable Audio"}
               >
-                AUDIO: {soundEnabled ? 'ON' : 'MUTED'}
+                {soundEnabled ? <Volume2 className="w-3 h-3 text-cyan-400" /> : <VolumeX className="w-3 h-3 text-gray-500" />}
+                <span>{soundEnabled ? 'ON' : 'MUTED'}</span>
               </button>
             </div>
             <div className="text-2xl sm:text-3xl font-black font-orbitron text-white tabular-nums drop-shadow-[0_0_8px_rgba(255,255,255,0.25)]">
@@ -628,25 +686,77 @@ export const TetrisBoard: React.FC = () => {
           </div>
         </div>
 
-        {/* Canvas Board Shell */}
+        {/* Issue 22 Fix: Accessible Game Canvas Shell */}
         <div className="relative p-1 bg-gray-950 border-2 border-gray-800 rounded-xl shadow-2xl overflow-hidden">
           <canvas
             ref={canvasRef}
-            width={COLS * BLOCK_SIZE}
-            height={ROWS * BLOCK_SIZE}
-            className="rounded-lg max-w-full block"
+            role="application"
+            aria-label="Entropic Tetris Matrix Board"
+            tabIndex={0}
+            className="rounded-lg max-w-full block focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
+            style={{ width: LOGICAL_WIDTH, height: LOGICAL_HEIGHT }}
           />
         </div>
 
-        {/* Mobile / Touch On-Screen Controls */}
-        <div className="flex flex-wrap justify-center gap-2 mt-2 w-full max-w-[320px] lg:hidden">
-          <button onClick={() => movePiece(-1, 0)} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">LEFT</button>
-          <button onClick={() => rotatePiece('cw')} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">ROT</button>
-          <button onClick={() => movePiece(1, 0)} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">RIGHT</button>
-          <button onClick={() => movePiece(0, 1)} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">DOWN</button>
-          <button onClick={hardDrop} className="px-3 py-2 bg-cyan-950/80 border border-cyan-800 rounded text-xs active:bg-cyan-800 font-orbitron text-cyan-200">DROP</button>
-          <button onClick={holdPieceAction} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">HOLD</button>
-          <button onClick={togglePause} className="px-3 py-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron">{isPaused ? 'RESUME' : 'PAUSE'}</button>
+        {/* Issue 20 & 21 Fix: Mobile / Touch On-Screen Controls (min 44x44px touch targets + CCW rotation + repeating hold) */}
+        <div className="grid grid-cols-4 gap-2 mt-2 w-full max-w-[340px] lg:hidden select-none">
+          <button 
+            {...leftHold}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Move Left"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={() => rotatePiece('ccw')}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Rotate Counter-Clockwise"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={() => rotatePiece('cw')}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Rotate Clockwise"
+          >
+            <RotateCw className="w-4 h-4" />
+          </button>
+          <button 
+            {...rightHold}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Move Right"
+          >
+            <ArrowRight className="w-4 h-4" />
+          </button>
+
+          <button 
+            {...downHold}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Soft Drop"
+          >
+            <ArrowDown className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={hardDrop}
+            className="min-h-[44px] min-w-[44px] p-2 bg-cyan-950/80 border border-cyan-800 rounded text-xs active:bg-cyan-800 font-orbitron text-cyan-200 flex items-center justify-center cursor-pointer"
+            aria-label="Hard Drop"
+          >
+            <ArrowDownToLine className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={holdPieceAction}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label="Hold Piece"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button 
+            onClick={togglePause}
+            className="min-h-[44px] min-w-[44px] p-2 bg-gray-900 border border-gray-800 rounded text-xs active:bg-cyan-950 font-orbitron flex items-center justify-center cursor-pointer text-cyan-300"
+            aria-label={isPaused ? "Resume Game" : "Pause Game"}
+          >
+            {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+          </button>
         </div>
       </div>
 
@@ -698,7 +808,7 @@ export const TetrisBoard: React.FC = () => {
 
       {/* SYSTEM MANUAL / README MODAL OVERLAY */}
       {showManual && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md transition-opacity duration-200">
           <div className="bg-black/95 border-2 border-cyan-500/60 rounded-xl max-w-2xl w-full p-6 text-white font-share-tech shadow-[0_0_50px_rgba(6,182,212,0.3)] relative max-h-[85vh] flex flex-col">
             {/* Modal Header */}
             <div className="flex justify-between items-center border-b border-gray-800 pb-3 mb-4">
@@ -712,9 +822,10 @@ export const TetrisBoard: React.FC = () => {
               </div>
               <button
                 onClick={() => setShowManual(false)}
-                className="text-gray-400 hover:text-white px-2.5 py-1 text-sm border border-gray-800 rounded hover:border-cyan-500 transition-colors cursor-pointer font-orbitron"
+                className="text-gray-400 hover:text-white p-1 border border-gray-800 rounded hover:border-cyan-500 transition-colors cursor-pointer"
+                aria-label="Close Manual"
               >
-                ✕
+                <X className="w-4 h-4" />
               </button>
             </div>
 
@@ -725,7 +836,7 @@ export const TetrisBoard: React.FC = () => {
                   1. Threat Overview: The Adversarial Engine
                 </h3>
                 <p>
-                  Entropic Tetris replaces traditional 7-bag randomizers with a predictive, adversarial AI running on a Python FastAPI backend. For every move, the adversary executes a 1-ply minimax simulation across all 7 tetrominoes, projecting wall-kicks, placements, and line clears. It selects the piece that leaves the player with maximum entropy (highest aggregate height, holes, and surface bumpiness).
+                  Entropic Tetris replaces traditional 7-bag randomizers with a predictive, adversarial AI. For every move, the adversary executes a 1-ply minimax simulation across all 7 tetrominoes, projecting wall-kicks, placements, and line clears. It selects the piece that leaves the player with maximum entropy (highest aggregate height, holes, and surface bumpiness).
                 </p>
               </section>
 

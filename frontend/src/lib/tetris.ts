@@ -158,20 +158,3 @@ export function getWallKicks(type: PieceType, fromRot: number, toRot: number): n
   if (type === 'O') return [[0, 0]];
   return WALL_KICKS_NORMAL[key] || [[0, 0]];
 }
-
-// 7-Bag Randomizer utility for offline / fallback mode
-export class SevenBag {
-  private bag: PieceType[] = [];
-
-  next(): PieceType {
-    if (this.bag.length === 0) {
-      const standard: PieceType[] = ['I', 'J', 'L', 'O', 'S', 'T', 'Z'];
-      for (let i = standard.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [standard[i], standard[j]] = [standard[j], standard[i]];
-      }
-      this.bag = standard;
-    }
-    return this.bag.pop()!;
-  }
-}
