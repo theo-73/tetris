@@ -313,21 +313,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
     setLockedCell(updatedLockedCell);
     setCanHold(true);
 
-    // Compute next adversarial move
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
-    } else {
-      // Run Native Client-Side Minimax Heuristic Engine
-      const decision = localAgentRef.current.decideNextPiece(finalGrid);
-      setChaos(decision.chaos);
-      setThoughts(prev => [
-        { text: decision.thought, time: new Date().toLocaleTimeString() },
-        ...prev
-      ].slice(0, 15));
-      setNextPieceType(decision.piece);
-    }
-
-    // Spawn next piece immediately
+    // Spawn next piece from preview and compute next adversary move
     setNextPieceType(currentNext => {
       const pieceToSpawn = createPiece(currentNext);
       
@@ -342,13 +328,24 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
       setActivePiece(pieceToSpawn);
 
-      // Pre-calculate next native adversarial piece if not connected
+      // In Native AI mode, compute the next preview piece for the next turn
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        return localAgentRef.current.decideNextPiece(finalGrid).piece;
+        const decision = localAgentRef.current.decideNextPiece(finalGrid);
+        setChaos(decision.chaos);
+        setThoughts(prev => [
+          { text: decision.thought, time: new Date().toLocaleTimeString() },
+          ...prev
+        ].slice(0, 15));
+        return decision.piece;
       }
 
       return currentNext;
     });
+
+    // In WebSocket mode, send board state to server
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
+    }
   }, [clearLockTimer]);
 
   // Move Piece
