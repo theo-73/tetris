@@ -44,23 +44,37 @@
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Quickstart & Deployment
 
-### 1. Start the Backend (FastAPI)
+### Option 1: 1-Click Vercel Deploy (Zero External Server)
+The entire game features an integrated **Native TypeScript Adversarial Minimax Engine** that runs directly inside Next.js with **0ms latency**:
+1. Push this repository to GitHub.
+2. In [Vercel](https://vercel.com), click **Import Repository**.
+3. Click **Deploy**. You're live in 30 seconds!
+
+---
+
+### Option 2: Local Development (Standalone or Dual-Service)
+
+#### Running Standalone (Next.js + Native AI):
 ```bash
+npm install
+npm run dev
+```
+Open [http://localhost:3000](http://localhost:3000) to play.
+
+#### Running with Optional Python WebSocket Server:
+```bash
+# Terminal 1 - Python FastAPI Backend
 cd backend
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
-```
-The server will start at `http://localhost:8000`. WebSocket endpoint is available at `ws://localhost:8000/ws`.
 
-### 2. Start the Frontend (Next.js)
-```bash
+# Terminal 2 - Next.js Frontend
 cd frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 

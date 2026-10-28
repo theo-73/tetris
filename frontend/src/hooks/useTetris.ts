@@ -1,14 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Piece, PieceType, Point, SHAPES, COLS, ROWS, 
-  isValidMove, rotate, getWallKicks, SevenBag,
+  isValidMove, rotate, getWallKicks,
   INITIAL_DROP_INTERVAL, MIN_DROP_INTERVAL, SPEED_INCREMENT,
   LOCK_DELAY_MS, MAX_LOCK_RESETS
 } from '../lib/tetris';
+import { AdversarialAgent, ShadowSaboteur } from '../lib/adversary';
 
 const INITIAL_GRID: (PieceType | number)[][] = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
-
-const fallbackBag = new SevenBag();
 
 export type AudioEventType = 'move' | 'rotate' | 'softdrop' | 'harddrop' | 'lock' | 'clear' | 'tetris' | 'purge' | 'gameover';
 
@@ -17,9 +16,15 @@ export interface UseTetrisOptions {
 }
 
 export const useTetris = (options?: UseTetrisOptions) => {
+  // Native Client-Side Adversarial Engine
+  const localAgentRef = useRef<AdversarialAgent>(new AdversarialAgent());
+  const shadowSaboteurRef = useRef<ShadowSaboteur | null>(null);
+
   const [grid, setGrid] = useState<(PieceType | number)[][]>(INITIAL_GRID);
   const [activePiece, setActivePiece] = useState<Piece | null>(null);
-  const [nextPieceType, setNextPieceType] = useState<PieceType>(() => fallbackBag.next());
+  const [nextPieceType, setNextPieceType] = useState<PieceType>(() => {
+    return new AdversarialAgent().decideNextPiece(INITIAL_GRID).piece;
+  });
   const [holdPiece, setHoldPiece] = useState<PieceType | null>(null);
   const [canHold, setCanHold] = useState(true);
   const [score, setScore] = useState(0);
@@ -28,11 +33,18 @@ export const useTetris = (options?: UseTetrisOptions) => {
   const [isPaused, setIsPaused] = useState(true);
   const [chaos, setChaos] = useState(0);
   const [thoughts, setThoughts] = useState<{ text: string; time: string }[]>(() => [
-    { text: "SYSTEM_READY // ENTROPIC_ONLINE", time: "--:--:--" }
+    { text: "NATIVE_ADVERSARY_ACTIVE // ENTROPIC_ONLINE", time: "--:--:--" }
   ]);
   const [lockedCell, setLockedCell] = useState<Point | null>(null);
   const [comboMessage, setComboMessage] = useState<{ text: string; type: 'tetris' | 'purge' } | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
+
+  // Initialize Shadow Saboteur
+  useEffect(() => {
+    shadowSaboteurRef.current = new ShadowSaboteur((cell) => {
+      setLockedCell(cell);
+    });
+  }, []);
 
   // Audio callback ref
   const onAudioRef = useRef(options?.onAudioEvent);
@@ -88,8 +100,20 @@ export const useTetris = (options?: UseTetrisOptions) => {
     };
   };
 
-  // WebSocket Connection
+  // Optional Remote WebSocket Connection (Connects if server is running, falls back gracefully to Native Engine)
   useEffect(() => {
+    // Only attempt remote WS if explicitly configured or running on standard local dev
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || (
+      typeof window !== 'undefined' && window.location.hostname === 'localhost'
+        ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8000/ws`
+        : null
+    );
+
+    if (!wsUrl) {
+      // Running standalone / Vercel deployment: Native client-side engine is active
+      return;
+    }
+
     let socket: WebSocket | null = null;
     let reconnectTimeout: NodeJS.Timeout | null = null;
     let isMounted = true;
@@ -98,19 +122,13 @@ export const useTetris = (options?: UseTetrisOptions) => {
       if (!isMounted) return;
 
       try {
-        const wsUrl = process.env.NEXT_PUBLIC_WS_URL || (
-          typeof window !== 'undefined'
-            ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:8000/ws`
-            : 'ws://localhost:8000/ws'
-        );
-
         socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
           if (!isMounted) return;
           setWsConnected(true);
           setThoughts(prev => [
-            { text: "NEURAL_LINK_ESTABLISHED // ADVERSARY_CONNECTED", time: new Date().toLocaleTimeString() },
+            { text: "REMOTE_NEURAL_LINK_ESTABLISHED // WS_ONLINE", time: new Date().toLocaleTimeString() },
             ...prev
           ].slice(0, 15));
         };
@@ -146,7 +164,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
         socket.onclose = () => {
           if (!isMounted) return;
           setWsConnected(false);
-          reconnectTimeout = setTimeout(connect, 3000);
+          reconnectTimeout = setTimeout(connect, 4000);
         };
 
         socket.onerror = () => {
@@ -154,9 +172,9 @@ export const useTetris = (options?: UseTetrisOptions) => {
         };
 
         wsRef.current = socket;
-      } catch (err) {
-        console.error("WebSocket connection error:", err);
-        reconnectTimeout = setTimeout(connect, 3000);
+      } catch {
+        // Quiet fallback to native engine
+        reconnectTimeout = setTimeout(connect, 4000);
       }
     };
 
@@ -168,6 +186,22 @@ export const useTetris = (options?: UseTetrisOptions) => {
       if (socket) socket.close();
     };
   }, []);
+
+  // Periodic Native Shadow Saboteur (runs when WebSocket is offline)
+  useEffect(() => {
+    if (wsConnected) return;
+
+    const shadowInterval = setInterval(() => {
+      if (!isPausedRef.current && !gameOverRef.current) {
+        const piece = activePieceRef.current;
+        const currentGrid = gridRef.current;
+        const pos = piece ? piece.position : { x: 4, y: 0 };
+        shadowSaboteurRef.current?.triggerPeriodicSabotage(currentGrid, pos);
+      }
+    }, 8000);
+
+    return () => clearInterval(shadowInterval);
+  }, [wsConnected]);
 
   // Clear lock delay timer
   const clearLockTimer = useCallback(() => {
@@ -228,6 +262,8 @@ export const useTetris = (options?: UseTetrisOptions) => {
 
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'PURGE_EVENT' }));
+      } else {
+        shadowSaboteurRef.current?.clearLock();
       }
     } else if (currentLocked && cleared > 0) {
       // Shift locked cell down for rows cleared above it
@@ -277,9 +313,18 @@ export const useTetris = (options?: UseTetrisOptions) => {
     setLockedCell(updatedLockedCell);
     setCanHold(true);
 
-    // Send updated board state to backend
+    // Compute next adversarial move
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'BOARD_STATE', payload: finalGrid }));
+    } else {
+      // Run Native Client-Side Minimax Heuristic Engine
+      const decision = localAgentRef.current.decideNextPiece(finalGrid);
+      setChaos(decision.chaos);
+      setThoughts(prev => [
+        { text: decision.thought, time: new Date().toLocaleTimeString() },
+        ...prev
+      ].slice(0, 15));
+      setNextPieceType(decision.piece);
     }
 
     // Spawn next piece immediately
@@ -296,8 +341,13 @@ export const useTetris = (options?: UseTetrisOptions) => {
       }
 
       setActivePiece(pieceToSpawn);
-      // Fallback: advance next piece type if offline
-      return fallbackBag.next();
+
+      // Pre-calculate next native adversarial piece if not connected
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        return localAgentRef.current.decideNextPiece(finalGrid).piece;
+      }
+
+      return currentNext;
     });
   }, [clearLockTimer]);
 
@@ -310,13 +360,19 @@ export const useTetris = (options?: UseTetrisOptions) => {
     const currentLocked = lockedCellRef.current;
 
     if (isValidMove(currentGrid, piece, { x: dx, y: dy }, currentLocked)) {
+      const newPos = { x: piece.position.x + dx, y: piece.position.y + dy };
       setActivePiece(prev => prev ? {
         ...prev,
-        position: { x: prev.position.x + dx, y: prev.position.y + dy }
+        position: newPos
       } : null);
 
       if (dx !== 0) triggerAudio('move');
       if (dy > 0) triggerAudio('softdrop');
+
+      // Native predictive sabotage trigger when piece is deep
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        shadowSaboteurRef.current?.triggerPredictiveSabotage(currentGrid, newPos);
+      }
 
       // If moving while grounded, reset lock delay (up to MAX_LOCK_RESETS)
       const isNowGrounded = !isValidMove(currentGrid, piece, { x: dx, y: dy + 1 }, currentLocked);
@@ -448,7 +504,9 @@ export const useTetris = (options?: UseTetrisOptions) => {
           setIsPaused(true);
           setActivePiece(null);
         }
-        return fallbackBag.next();
+        
+        // Native adversarial piece generation
+        return localAgentRef.current.decideNextPiece(currentGrid).piece;
       });
     }
   }, [canHold, holdPiece, clearLockTimer]);
@@ -478,9 +536,15 @@ export const useTetris = (options?: UseTetrisOptions) => {
       setHoldPiece(null);
       setCanHold(true);
 
-      const firstPiece = createPiece(fallbackBag.next());
+      localAgentRef.current.reset();
+      shadowSaboteurRef.current?.clearLock();
+
+      const initialDecision = localAgentRef.current.decideNextPiece(INITIAL_GRID);
+      const firstPiece = createPiece(initialDecision.piece);
       setActivePiece(firstPiece);
-      setNextPieceType(fallbackBag.next());
+
+      const secondDecision = localAgentRef.current.decideNextPiece(INITIAL_GRID);
+      setNextPieceType(secondDecision.piece);
       setIsPaused(false);
       lastTimeRef.current = performance.now();
 
@@ -494,11 +558,10 @@ export const useTetris = (options?: UseTetrisOptions) => {
       const nextState = !prev;
       if (!nextState) {
         lastTimeRef.current = performance.now();
-        // If unpausing without active piece, spawn initial
         if (!activePieceRef.current) {
           const piece = createPiece(nextPieceType);
           setActivePiece(piece);
-          setNextPieceType(fallbackBag.next());
+          setNextPieceType(localAgentRef.current.decideNextPiece(gridRef.current).piece);
         }
       } else {
         clearLockTimer();
@@ -532,7 +595,7 @@ export const useTetris = (options?: UseTetrisOptions) => {
     return () => cancelAnimationFrame(requestRef.current);
   }, []);
 
-  // Live Position Pulse to Backend (Stable timer decoupled from keypresses)
+  // Live Position Pulse to Backend (when connected)
   useEffect(() => {
     const pulseInterval = setInterval(() => {
       const piece = activePieceRef.current;

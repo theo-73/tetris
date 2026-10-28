@@ -585,10 +585,10 @@ export const TetrisBoard: React.FC = () => {
             <span className="text-cyan-400 font-bold tabular-nums">{lines}</span>
           </div>
           <div className="flex justify-between items-center border-t border-gray-900 pt-1.5">
-            <span className="text-gray-500">LINK</span>
-            <span className={`flex items-center gap-1.5 ${wsConnected ? 'text-emerald-400' : 'text-amber-400'}`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
-              {wsConnected ? 'NEURAL_WS' : 'LOCAL_FALLBACK'}
+            <span className="text-gray-500">ENGINE</span>
+            <span className="flex items-center gap-1.5 text-emerald-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]" />
+              {wsConnected ? 'REMOTE_WS' : 'NATIVE_AI'}
             </span>
           </div>
         </div>
