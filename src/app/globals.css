@@ -3,11 +3,16 @@
 @theme {
   --font-orbitron: var(--font-orbitron), sans-serif;
   --font-share-tech: var(--font-share-tech), monospace;
+  --color-matrix-bg: #05070a;
+  --color-matrix-fg: #f8fafc;
+  --color-matrix-cyan: #06b6d4;
+  --color-matrix-amber: #eab308;
+  --color-matrix-red: #ef4444;
 }
 
 :root {
-  --background: #000000;
-  --foreground: #ffffff;
+  --background: #05070a;
+  --foreground: #f8fafc;
 }
 
 body {
@@ -19,6 +24,13 @@ body {
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+}
+
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
   }
 }
 
@@ -38,6 +50,13 @@ body {
 
 .animate-noise {
   animation: noise 0.2s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-noise {
+    animation: none !important;
+    transform: none !important;
+  }
 }
 
 .glow-cyan {

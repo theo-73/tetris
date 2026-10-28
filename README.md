@@ -1,117 +1,89 @@
 # Entropic Tetris // Adversarial Neural Matrix
 
-> An adversarial, cyberpunk Tetris game driven by a real-time heuristic AI engine that predicts player placements, calculates worst-case entropy vectors, and dynamically sabotages the matrix.
+> An adversarial, cyberpunk Tetris game driven by a real-time heuristic AI engine that predicts player placements, calculates worst-case entropy vectors, and dynamically sabotages the matrix. Built natively on Next.js 16 + React 19 with zero external server dependencies.
 
 ---
 
 ## ⚡ Overview
 
 **Entropic Tetris** flips standard Tetris mechanics on their head:
-- Instead of random or 7-bag piece generators, every piece is calculated by an **Adversarial Heuristic Agent** running on a Python FastAPI backend.
-- The agent simulates all possible player placements for each tetromino (using SRS wall-kicks and virtual line-clear evaluation), computing the move that leaves the board in the highest entropy state (maximizing aggregate height, holes, and surface bumpiness).
+- Instead of random or 7-bag piece generators, every piece is calculated by a **Native Adversarial Heuristic Agent** executing client-side with 0ms latency.
+- The agent simulates all possible player placements for each tetromino (using 1-ply virtual line-clear evaluation, deep well detection, and rotational symmetry pruning), computing the move that leaves the board in the highest entropy state (maximizing aggregate height, holes, deep wells, and surface bumpiness).
 - **Entropy Pulse & Chaos Meter**: As the board destabilizes, the HUD transitions from calm cyan to amber, and finally critical red.
-- **Shadow Agent & Cell Locks**: The adversary actively locks cells directly beneath your active pieces. Clearing the row containing a locked cell triggers a **System Purge**, resetting the chaos meter.
-- **Full Offline Resilience**: If the Python backend is unavailable, the client seamlessly falls back to an internal 7-bag randomizer without interrupting gameplay.
+- **Shadow Agent & Cell Locks**: The adversary actively locks cells directly beneath your active pieces. Clearing the row containing a locked cell triggers a **System Purge**, resetting the chaos meter and awarding a +1,000 pt bonus.
+- **Pure Client-Side Architecture**: Built with modern Next.js 16 and React 19, requiring no external backend servers or database connections. Deploys anywhere in seconds.
 
 ---
 
 ## 🛠️ Architecture
 
 ```
-                    +---------------------------+
-                    |    Python FastAPI Server  |
-                    |       (Port 8000)         |
-                    |                           |
-                    |  * Adversarial Minimax    |
-                    |  * Heuristic Analyzer     |
-                    |  * Shadow Agent Loop      |
-                    +-------------+-------------+
-                                  |
-                                  | ws://localhost:8000/ws
-                                  | (Bidirectional State)
-                                  v
-                    +---------------------------+
-                    |   Next.js 16 + React 19   |
-                    |       (Port 3000)         |
-                    |                           |
-                    |  * 60 FPS Canvas Pipeline |
-                    |  * Procedural Web Audio   |
-                    |  * DAS / ARR Keyboard     |
-                    |  * 500ms Lock Delay       |
-                    |  * Tailwind v4 HUD        |
-                    +---------------------------+
++-------------------------------------------------------------+
+|             Next.js 16 + React 19 Unified Matrix            |
+|                                                             |
+|  * Native Adversarial Minimax Engine (0ms Latency)          |
+|  * Shadow Saboteur & Predictive Targeting                   |
+|  * 60 FPS Hardware-Accelerated Canvas Pipeline              |
+|  * Procedural Web Audio Synthesizer (Zero Assets)           |
+|  * Strict SRS Wall-Kicks & Guideline 500ms Lock Delay       |
+|  * Responsive Cyber HUD (Desktop + Compact Mobile UI)       |
+|  * Full Screen Reader Accessibility (aria-live)             |
++-------------------------------------------------------------+
 ```
 
 ---
 
-## 🚀 Quickstart & Deployment
+## 🚀 Quickstart & Development
 
-### Option 1: 1-Click Vercel Deploy (Zero External Server)
-The entire game features an integrated **Native TypeScript Adversarial Minimax Engine** that runs directly inside Next.js with **0ms latency**:
-1. Push this repository to GitHub.
-2. In [Vercel](https://vercel.com), click **Import Repository**.
-3. Click **Deploy**. You're live in 30 seconds!
+Run the game locally with standard Node.js:
 
----
-
-### Option 2: Local Development (Standalone or Dual-Service)
-
-#### Running Standalone (Next.js + Native AI):
 ```bash
+# 1. Install dependencies
 npm install
+
+# 2. Start the development server
 npm run dev
 ```
-Open [http://localhost:3000](http://localhost:3000) to play.
 
-#### Running with Optional Python WebSocket Server:
+Open [http://localhost:3000](http://localhost:3000) in your browser to engage the matrix.
+
+To create a production build:
 ```bash
-# Terminal 1 - Python FastAPI Backend
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
-
-# Terminal 2 - Next.js Frontend
-cd frontend
-npm install
-npm run dev
+npm run build
+npm start
 ```
 
 ---
 
 ## 🎮 Controls
 
-| Action | Primary Key | Secondary Key |
-| :--- | :--- | :--- |
-| **Move Left / Right** | `←` / `→` | DAS (160ms) + ARR (30ms) |
-| **Rotate Clockwise (CW)** | `↑` | - |
-| **Rotate Counter-Clockwise (CCW)** | `Z` | `Ctrl` |
-| **Soft Drop** | `↓` | - |
-| **Hard Drop** | `Space` | - |
-| **Hold Piece** | `C` | - |
-| **Start / Pause / Reboot** | `Enter` | `P` / `Esc` |
-| **Mute / Unmute Audio** | HUD Button | Procedural Synth Audio |
+| Action | Primary Key | Secondary Key | Mobile Control |
+| :--- | :--- | :--- | :--- |
+| **Move Left / Right** | `←` / `→` | DAS (160ms) + ARR (30ms) | `←` / `→` (Tap-and-hold repeat) |
+| **Rotate Clockwise (CW)** | `↑` | - | `↷ ROT` button |
+| **Rotate Counter-Clockwise (CCW)** | `Z` | `Ctrl` | `↶ ROT` button |
+| **Soft Drop** | `↓` | - | `↓` button |
+| **Hard Drop** | `Space` | - | `DROP` button |
+| **Hold Piece** | `C` | - | `HOLD` button |
+| **Start / Pause / Reboot** | `Enter` | `P` / `Esc` | `PAUSE / RESUME` button |
+| **Mute / Unmute Audio** | HUD Button | - | Header Audio Button |
 
 ---
 
-## 🧩 Key Enhancements & Bug Fixes
+## 🧩 Key Enhancements & Polish
 
-1. **Adversarial Heuristic Engine**:
-   - Fixed the inverted starvation multiplier so the AI withholds helpful pieces rather than prioritizing them.
-   - Fixed placement simulation to execute virtual line clears, correctly rewarding line wipes.
-   - Expanded column bounds so vertical I and T pieces reach all columns `0..9`.
-2. **WebSocket & Concurrency Reliability**:
-   - Clamped active piece coordinates to prevent negative array indexing or `IndexError` crashes.
-   - Cleaned up background tasks with guaranteed `try...finally` cancellation on disconnect.
-3. **Canvas 60 FPS Animation Pipeline**:
-   - Replaced static state-driven canvas drawing with a dedicated `requestAnimationFrame` render loop.
-   - Particles, digital substrate rain, and glowing locked cells now animate smoothly at 60 FPS without freezing between drops.
-4. **Game Physics & Guideline Mechanics**:
-   - Added a 500ms lock delay with up to 15 move/rotation resets.
-   - Added counter-clockwise (CCW) rotation support.
-   - Added `e.preventDefault()` to stop browser window scrolling on game keys.
-   - Fixed the hold mechanic to advance the piece queue immediately.
-5. **Visuals & Audio**:
-   - Connected Google Fonts (`Orbitron`, `Share Tech Mono`) into Tailwind CSS v4 via `@theme`.
-   - Built a zero-dependency Web Audio procedural sound synthesizer (moves, rotations, drops, line clears, purges, game over).
-   - Added local high score persistence via `localStorage`.
-   - Added responsive design and mobile touch controls.
+1. **Native Adversarial Heuristic Engine**:
+   - 1-ply minimax simulation across all 7 tetrominoes and all 4 rotation states.
+   - Continuous starvation bonus withholding helpful pieces without repetition trap cliffs.
+   - Dynamic tie-breaking entropy prevents clustered repetition.
+2. **True Mobile-Responsive HUD**:
+   - Replaced tall 1,700px multi-column scroll stack with a single-screen responsive canvas and compact mobile top bar.
+   - Minimum 44x44px touch targets compliant with WCAG AA.
+3. **Canvas 60 FPS HiDPI Pipeline**:
+   - Retinal pixel buffer scaling with `devicePixelRatio`.
+   - Continuous `requestAnimationFrame` render loop for cyber rain and particle physics.
+4. **Zero-Dependency Procedural Sound**:
+   - Web Audio synthesizer with clean oscillator/gain disconnection on playback end to prevent memory leaks.
+5. **Guideline Mechanics**:
+   - 500ms lock delay with up to 15 move/rotation resets.
+   - Strict Super Rotation System (SRS) wall-kicks for all standard tetrominoes.
